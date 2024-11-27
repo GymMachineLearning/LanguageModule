@@ -9,6 +9,8 @@ __pycache__/
 # Kody api
 ./api.txt
 
+# Dane
+data/
 
 # Distribution / packaging
 .Python
