@@ -61,13 +61,24 @@ def ensure_run_structure(run_dir: Path | str) -> RunPaths:
     return paths
 
 
+def ensure_run_metadata_structure(run_dir: Path | str) -> RunPaths:
+    paths = make_run_paths(run_dir)
+    for directory in [
+        paths.run_dir,
+        paths.metrics_dir,
+        paths.logs_dir,
+    ]:
+        directory.mkdir(parents=True, exist_ok=True)
+    return paths
+
+
 def save_json(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def save_config(run_dir: Path | str, payload: Mapping[str, object]) -> Path:
-    paths = ensure_run_structure(run_dir)
+    paths = ensure_run_metadata_structure(run_dir)
     try:
         import yaml
 
@@ -171,14 +182,46 @@ def save_metrics_rows(run_dir: Path | str, filename: str, rows: Sequence[Mapping
 
 
 def save_summary_json(run_dir: Path | str, payload: Mapping[str, object]) -> Path:
-    paths = ensure_run_structure(run_dir)
+    paths = ensure_run_metadata_structure(run_dir)
     out_path = paths.metrics_dir / "summary.json"
     save_json(out_path, payload)
     return out_path
 
 
+def append_case_result(run_dir: Path | str, row: Mapping[str, object]) -> Path:
+    paths = ensure_run_metadata_structure(run_dir)
+    out_path = paths.logs_dir / "cases.csv"
+    fieldnames = [
+        "video_id",
+        "video_path",
+        "duration_s",
+        "fps",
+        "num_frames",
+        "status",
+        "started_at",
+        "finished_at",
+        "elapsed_s",
+        "model_name",
+        "prompt_version",
+        "prediction_path",
+        "raw_response_path",
+        "labels_npy_path",
+        "labels_csv_path",
+        "message",
+        "traceback",
+    ]
+    row_data = {field: row.get(field, "") for field in fieldnames}
+    file_exists = out_path.exists()
+    with out_path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row_data)
+    return out_path
+
+
 def append_failure(run_dir: Path | str, *, video_id: str, video_path: str, status: str, error_message: str) -> Path:
-    paths = ensure_run_structure(run_dir)
+    paths = ensure_run_metadata_structure(run_dir)
     out_path = paths.logs_dir / "failures.csv"
     file_exists = out_path.exists()
     with out_path.open("a", encoding="utf-8", newline="") as handle:

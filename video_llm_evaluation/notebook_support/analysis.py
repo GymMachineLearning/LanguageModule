@@ -47,12 +47,16 @@ def build_summary_dataframe(results_df: pd.DataFrame, dataset_df: pd.DataFrame) 
         prediction_path = Path(result_row['prediction_path'])
         prediction_payload = json.loads(prediction_path.read_text(encoding='utf-8'))
         video_path_value = result_row.get('video_path', result_row.get('video_path_from_results', ''))
+        gt_subset = ground_truth_row_for_video(dataset_df, video_path_value)
         gt_errors = ground_truth_errors_for_video(dataset_df, video_path_value)
         pred_errors = predicted_errors_from_payload(prediction_payload)
+        matched_video_path = None if gt_subset.empty else str(gt_subset.iloc[0].get('video_path', ''))
         rows.append(
             {
                 'video_id': result_row.get('video_id'),
                 'video_path': video_path_value,
+                'gt_match_found': not gt_subset.empty,
+                'gt_matched_video_path': matched_video_path,
                 'gt_errors': gt_errors,
                 'pred_errors': pred_errors,
                 'gt_present': bool(gt_errors),

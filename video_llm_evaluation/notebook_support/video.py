@@ -69,9 +69,60 @@ def active_errors_at_time(segments_by_error: dict[str, list[dict]], time_s: floa
     return active
 
 
-def draw_error_overlay(frame_rgb: np.ndarray, *, time_s: float, llm_errors: list[str], gt_errors: list[str] | None = None) -> np.ndarray:
-    from video_llm_evaluation.constants import ERROR_CLASSES as _ERROR_CLASSES
+def _frame_content_bounds(frame_rgb: np.ndarray) -> tuple[int, int, int, int]:
+    gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+    mask = gray > 20
+    coords = np.argwhere(mask)
+    if coords.size == 0:
+        height, width = frame_rgb.shape[:2]
+        return 0, 0, width, height
+    y0, x0 = coords.min(axis=0)
+    y1, x1 = coords.max(axis=0)
+    return int(x0), int(y0), int(x1) + 1, int(y1) + 1
 
+
+def _wrap_text(text: str, max_chars: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return ['']
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        if len(current) + 1 + len(word) <= max_chars:
+            current += ' ' + word
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _draw_wrapped_lines(
+    frame: np.ndarray,
+    lines: list[str],
+    *,
+    x: int,
+    y: int,
+    max_width: int,
+    font_scale: float,
+    color: tuple[int, int, int],
+    thickness: int,
+    line_gap: int = 4,
+) -> int:
+    if max_width <= 0:
+        return y
+
+    estimated_chars = max(6, int(max_width / max(font_scale * 11, 1)))
+    for line in lines:
+        wrapped_lines = _wrap_text(line, estimated_chars)
+        for wrapped_line in wrapped_lines:
+            cv2.putText(frame, wrapped_line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+            cv2.putText(frame, wrapped_line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness, cv2.LINE_AA)
+            y += int(round(font_scale * 26)) + line_gap
+    return y
+
+
+def draw_error_overlay(frame_rgb: np.ndarray, *, time_s: float, llm_errors: list[str], gt_errors: list[str] | None = None) -> np.ndarray:
     error_colors = {
         'Squat-depth': '#e76f51',
         'Back-round': '#f4a261',
@@ -85,31 +136,60 @@ def draw_error_overlay(frame_rgb: np.ndarray, *, time_s: float, llm_errors: list
     llm_color = '#9d4edd'
 
     frame = frame_rgb.copy()
-    y = 30
-    header = f't={time_s:0.2f}s'
-    cv2.putText(frame, header, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 5, cv2.LINE_AA)
-    cv2.putText(frame, header, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-    y += 35
+    x0, y0, x1, y1 = _frame_content_bounds(frame)
+    height, width = frame.shape[:2]
+    left_bar_width = max(0, x0)
+    right_bar_width = max(0, width - x1)
 
-    def draw_line(prefix: str, labels: list[str], base_color: str, y_pos: int) -> int:
-        line = prefix + (', '.join(labels) if labels else 'brak')
-        rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-        bgr = (rgb[2], rgb[1], rgb[0])
-        cv2.putText(frame, line, (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 5, cv2.LINE_AA)
-        cv2.putText(frame, line, (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.65, bgr, 2, cv2.LINE_AA)
-        return y_pos + 28
+    use_left_bar = left_bar_width >= right_bar_width
+    if use_left_bar and left_bar_width > 30:
+        text_x = 12
+        text_width = left_bar_width - 24
+    elif right_bar_width > 30:
+        text_x = x1 + 12
+        text_width = right_bar_width - 24
+    else:
+        text_x = 12
+        text_width = width - 24
 
-    y = draw_line('LLM: ', llm_errors, llm_color, y)
+    header_color = (255, 255, 255)
+    title_color = (255, 105, 180)
+    gt_title_color = tuple(int(gt_color.lstrip('#')[i:i+2], 16)[::-1] if False else 0 for i in range(1))
+    gt_rgb = tuple(int(gt_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+    llm_rgb = tuple(int(llm_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+    gt_bgr = (gt_rgb[2], gt_rgb[1], gt_rgb[0])
+    llm_bgr = (llm_rgb[2], llm_rgb[1], llm_rgb[0])
+
+    y = max(24, y0 + 24 if x0 <= 0 else 30)
+    cv2.putText(frame, f't={time_s:0.2f}s', (text_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(frame, f't={time_s:0.2f}s', (text_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, header_color, 1, cv2.LINE_AA)
+    y += 26
+
+    llm_line = 'LLM: ' + (', '.join(llm_errors) if llm_errors else 'brak')
+    cv2.putText(frame, 'LLM:', (text_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(frame, 'LLM:', (text_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, llm_bgr, 1, cv2.LINE_AA)
+    y = _draw_wrapped_lines(frame, [llm_line[len('LLM: '):]], x=text_x + 44, y=y, max_width=max(0, text_width - 44), font_scale=0.43, color=llm_bgr, thickness=1)
+    y += 6
+
     if gt_errors is not None:
-        y = draw_line('GT: ', gt_errors, gt_color, y)
+        gt_line = 'GT: ' + (', '.join(gt_errors) if gt_errors else 'brak')
+        cv2.putText(frame, 'GT:', (text_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(frame, 'GT:', (text_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, gt_bgr, 1, cv2.LINE_AA)
+        y = _draw_wrapped_lines(frame, [gt_line[len('GT: '):]], x=text_x + 38, y=y, max_width=max(0, text_width - 38), font_scale=0.43, color=gt_bgr, thickness=1)
 
-    for idx, error_type in enumerate(llm_errors[:6]):
-        color = error_colors.get(error_type, neutral_color)
-        rgb = tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-        bgr = (rgb[2], rgb[1], rgb[0])
-        text_y = frame.shape[0] - 20 - idx * 24
-        cv2.putText(frame, error_type, (20, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(frame, error_type, (20, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, bgr, 2, cv2.LINE_AA)
+    if llm_errors:
+        y += 8
+        _draw_wrapped_lines(
+            frame,
+            [f'- {error_type}' for error_type in llm_errors[:8]],
+            x=text_x,
+            y=y,
+            max_width=text_width,
+            font_scale=0.38,
+            color=tuple(int(neutral_color.lstrip('#')[i:i+2], 16) for i in (2, 1, 0)),
+            thickness=1,
+            line_gap=2,
+        )
 
     return frame
 
