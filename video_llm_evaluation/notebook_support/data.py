@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from video_llm_evaluation.constants import ERROR_CLASSES, MLPSD_ERROR_ROW_INDICES
+from video_llm_evaluation.dataset_split import mlpsd_key_for_video, normalise_video_key
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_VIDEOS_ROOT = (REPO_ROOT / "../../videos/Nagrania/Squat/preprocessed").resolve()
@@ -96,6 +97,9 @@ def load_mlpsd_dataframe(dataset_path: Path) -> pd.DataFrame:
     df = df.copy()
     df['video_path'] = df['video_path'].astype(str)
     df['relative_video_key'] = df['video_path'].map(normalize_video_key)
+    #: The key the whole pipeline joins on. ``relative_video_key`` above is kept
+    #: only because it is displayed; it must not be used for matching.
+    df['mlpsd_key'] = df['video_path'].map(normalise_video_key)
     df['gt_labels_matrix_raw'] = df['labels']
     df['gt_labels_matrix'] = df['labels'].apply(_select_pipeline_error_rows)
 
@@ -124,53 +128,77 @@ def load_mlpsd_dataframe(dataset_path: Path) -> pd.DataFrame:
     return df
 
 
-def _path_or_name_matches(left: str, right: str) -> bool:
-    left_norm = normalize_video_key(left)
-    right_norm = normalize_video_key(right)
-    left_stem = Path(str(left)).stem
-    right_stem = Path(str(right)).stem
-    left_name = Path(str(left)).name
-    right_name = Path(str(right)).name
+def mlpsd_key_for_display_path(video_path: str | Path, *, videos_root: Path | None = None) -> str | None:
+    """MLPSD key for a recording the notebook is about to show, or None.
 
-    if left_norm == right_norm:
-        return True
-    if left_norm.endswith(right_norm) or right_norm.endswith(left_norm):
-        return True
-    if left_stem == right_stem:
-        return True
-    if left_stem.endswith(right_stem) or right_stem.endswith(left_stem):
-        return True
-    if left_name == right_name:
-        return True
-    if left_name.endswith(right_name) or right_name.endswith(left_name):
-        return True
-    if left_norm in right_norm or right_norm in left_norm:
-        return True
-    if left_stem in right_stem or right_stem in left_stem:
-        return True
+    Deliberately the same derivation ``cli.py evaluate`` uses, from the same
+    module: the notebook and the metrics must agree about which ground truth
+    belongs to which recording, and a second, looser derivation here is exactly
+    how they stopped agreeing before.
 
-    left_tokens = {token for token in re.split(r'[^0-9A-Za-z]+', f'{left_stem} {left_name}') if len(token) >= 4}
-    right_tokens = {token for token in re.split(r'[^0-9A-Za-z]+', f'{right_stem} {right_name}') if len(token) >= 4}
-    if left_tokens & right_tokens:
-        return True
-    return False
+    Returns None when the path does not sit under the video library, because a
+    key cannot be derived from it — better no ground truth than someone else's.
+    """
+    root = Path(videos_root) if videos_root is not None else DEFAULT_VIDEOS_ROOT
+    path = Path(str(video_path))
+    try:
+        return mlpsd_key_for_video(root, path)
+    except ValueError:
+        return None
 
 
-def ground_truth_row_for_video(dataset_df: pd.DataFrame, video_path: str | Path) -> pd.DataFrame:
-    key = str(video_path)
-    subset = dataset_df[dataset_df['relative_video_key'].apply(lambda candidate: _path_or_name_matches(candidate, key))]
-    return subset
+def ground_truth_row_for_video(
+    dataset_df: pd.DataFrame,
+    video_path: str | Path,
+    *,
+    videos_root: Path | None = None,
+) -> pd.DataFrame:
+    """The MLPSD row for one recording: exactly one, or none at all.
+
+    Matching is on the canonical key, not on the file name. Names collide across
+    folders -- ``formcheck/1-0063-...`` and ``stronglifts5x5/0-0063-...`` are
+    different recordings by different people -- so a name-based match hands back
+    another recording's annotation with nothing to signal it.
+    """
+    if dataset_df.empty:
+        return dataset_df
+    key = mlpsd_key_for_display_path(video_path, videos_root=videos_root)
+    if key is None:
+        return dataset_df.iloc[0:0]
+    if 'mlpsd_key' not in dataset_df.columns:
+        keys = dataset_df['video_path'].astype(str).map(normalise_video_key)
+    else:
+        keys = dataset_df['mlpsd_key']
+    return dataset_df[keys == key]
 
 
-def ground_truth_errors_for_video(dataset_df: pd.DataFrame, video_path: str | Path) -> list[str]:
-    subset = ground_truth_row_for_video(dataset_df, video_path)
+def ground_truth_errors_for_video(
+    dataset_df: pd.DataFrame,
+    video_path: str | Path,
+    *,
+    videos_root: Path | None = None,
+) -> list[str]:
+    subset = ground_truth_row_for_video(dataset_df, video_path, videos_root=videos_root)
     if subset.empty:
         return []
     first = subset.iloc[0]
     return list(first.get('gt_errors', []))
 
 
-def select_video(results_df: pd.DataFrame, dataset_df: pd.DataFrame, *, selected_video_id: str | None = None, selected_index: int = 0) -> tuple[pd.Series | None, pd.Series | None]:
+def select_video(
+    results_df: pd.DataFrame,
+    dataset_df: pd.DataFrame,
+    *,
+    selected_video_id: str | None = None,
+    selected_index: int = 0,
+    videos_root: Path | None = None,
+) -> tuple[pd.Series | None, pd.Series | None]:
+    """Pick one prediction to inspect and the MLPSD row that belongs to it.
+
+    The MLPSD row is None when the recording has none. There is deliberately no
+    fallback row: standing in an unrelated recording's annotation renders a
+    ground-truth overlay that looks authoritative and is not.
+    """
     chosen_result = None
     if not results_df.empty:
         if selected_video_id is not None and 'video_id' in results_df.columns:
@@ -182,11 +210,13 @@ def select_video(results_df: pd.DataFrame, dataset_df: pd.DataFrame, *, selected
 
     chosen_dataset = None
     if chosen_result is not None and 'video_path' in chosen_result:
-        matches = ground_truth_row_for_video(dataset_df, chosen_result.get('video_path', ''))
+        matches = ground_truth_row_for_video(
+            dataset_df,
+            chosen_result.get('video_path', ''),
+            videos_root=videos_root,
+        )
         if not matches.empty:
             chosen_dataset = matches.iloc[0]
-    if chosen_dataset is None and not dataset_df.empty:
-        chosen_dataset = dataset_df.iloc[min(selected_index, len(dataset_df) - 1)]
 
     return chosen_result, chosen_dataset
 

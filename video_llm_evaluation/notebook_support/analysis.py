@@ -31,13 +31,23 @@ def intervals_from_payload(payload: dict) -> dict[str, list[tuple[float, float]]
 def gt_summary_for_video(dataset_df: pd.DataFrame, video_path: str | Path) -> dict[str, object]:
     subset = ground_truth_row_for_video(dataset_df, video_path)
     if subset.empty:
-        return {'gt_errors': [], 'gt_labels_matrix': None, 'gt_active_rows': [], 'gt_row': None}
+        # No MLPSD row for this recording. That is not the same as "no errors":
+        # gt_matched separates "annotated as clean" from "never annotated", which
+        # otherwise both read as six absent classes.
+        return {
+            'gt_errors': [],
+            'gt_labels_matrix': None,
+            'gt_active_rows': [],
+            'gt_row': None,
+            'gt_matched': False,
+        }
     row = subset.iloc[0]
     return {
         'gt_errors': list(row.get('gt_errors', [])),
         'gt_labels_matrix': row.get('gt_labels_matrix'),
         'gt_active_rows': list(row.get('gt_active_rows', [])),
         'gt_row': row,
+        'gt_matched': True,
     }
 
 
