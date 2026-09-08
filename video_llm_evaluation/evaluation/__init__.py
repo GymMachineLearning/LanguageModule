@@ -5,6 +5,7 @@ from .metrics import frame_metrics, labels_to_segments, segment_metrics, video_l
 from .persistence import (
 	append_failure,
 	ensure_run_structure,
+	metrics_dir_for_split,
 	save_config,
 	save_labels_csv,
 	save_labels_npy,

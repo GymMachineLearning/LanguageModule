@@ -19,7 +19,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from video_llm_evaluation.constants import ERROR_CLASSES
+from video_llm_evaluation.constants import DEFAULT_SPLIT, ERROR_CLASSES
+from video_llm_evaluation.dataset_split import (
+    format_composition,
+    load_split_index,
+    mlpsd_key_for_prediction,
+)
+from video_llm_evaluation.evaluation.persistence import metrics_dir_for_split
 
 #: Files written by ``cli.py evaluate`` that this report reads.
 AGGREGATE_FILES = {
@@ -71,6 +77,7 @@ class MetricsReport:
     cases: pd.DataFrame
     evaluated_at: datetime | None
     newest_labels_at: datetime | None
+    split: str | None = None
 
     @property
     def is_stale(self) -> bool:
@@ -97,11 +104,9 @@ class MetricsReport:
 # --------------------------------------------------------------------------- #
 
 
-def _evaluate_command(results_root: Path) -> str:
-    return (
-        'python -m video_llm_evaluation.cli evaluate '
-        f'--results-root {results_root}'
-    )
+def _evaluate_command(results_root: Path, split: str | None = None) -> str:
+    command = f'python -m video_llm_evaluation.cli evaluate --results-root {results_root}'
+    return f'{command} --split {split}' if split else command
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -130,20 +135,24 @@ def _newest_labels_mtime(results_root: Path) -> datetime | None:
     return datetime.fromtimestamp(max(mtimes)) if mtimes else None
 
 
-def load_metrics_report(results_root: Path | str) -> MetricsReport:
-    """Load the evaluation artifacts for one run.
+def load_metrics_report(results_root: Path | str, *, split: str | None = DEFAULT_SPLIT) -> MetricsReport:
+    """Load the evaluation artifacts for one run and one split.
+
+    ``split`` selects which metrics directory to read, never which rows to keep:
+    filtering happens in ``cli.py evaluate``, so the notebook cannot report
+    numbers the CLI never computed.
 
     Raises:
-        MetricsNotAvailable: when ``metrics/`` is missing or incomplete, with the
-            exact command that would produce it.
+        MetricsNotAvailable: when the metrics are missing or incomplete, with the
+            exact command that would produce them.
     """
     root = Path(results_root)
-    metrics_dir = root / 'metrics'
+    metrics_dir = metrics_dir_for_split(root, split)
 
     if not metrics_dir.exists():
         raise MetricsNotAvailable(
             f'No metrics directory under {root}.\n'
-            f'Run the evaluation first:\n    {_evaluate_command(root)}'
+            f'Run the evaluation first:\n    {_evaluate_command(root, split)}'
         )
 
     summary_path = metrics_dir / SUMMARY_FILE
@@ -162,12 +171,12 @@ def load_metrics_report(results_root: Path | str) -> MetricsReport:
     if len(missing) == len(AGGREGATE_FILES) + len(PER_VIDEO_FILES) + 1:
         raise MetricsNotAvailable(
             f'{metrics_dir} holds no evaluation output.\n'
-            f'Run the evaluation first:\n    {_evaluate_command(root)}'
+            f'Run the evaluation first:\n    {_evaluate_command(root, split)}'
         )
     if missing:
         raise MetricsNotAvailable(
             f'{metrics_dir} is incomplete, missing: {", ".join(sorted(missing))}.\n'
-            f'Re-run the evaluation:\n    {_evaluate_command(root)}'
+            f'Re-run the evaluation:\n    {_evaluate_command(root, split)}'
         )
 
     summary = json.loads(summary_path.read_text(encoding='utf-8'))
@@ -177,6 +186,7 @@ def load_metrics_report(results_root: Path | str) -> MetricsReport:
         summary=summary,
         config=_read_config(root),
         cases=_read_csv(metrics_dir / CASES_FILE),
+        split=summary.get('split', split),
         evaluated_at=datetime.fromtimestamp(summary_path.stat().st_mtime),
         newest_labels_at=_newest_labels_mtime(root),
         **frames,
@@ -196,7 +206,21 @@ def _run_predictions_count(run_dir: Path) -> int:
     return sum(1 for _ in run_dir.rglob("predictions_json/*.json"))
 
 
-def discover_runs(runs_root: Path | str) -> pd.DataFrame:
+def _available_metric_splits(run_dir: Path) -> list[str]:
+    """Which splits already have metrics computed for this run."""
+    metrics_dir = run_dir / 'metrics'
+    if not metrics_dir.exists():
+        return []
+    available = ['all'] if (metrics_dir / SUMMARY_FILE).exists() else []
+    available += sorted(
+        path.name.removeprefix('split_')
+        for path in metrics_dir.iterdir()
+        if path.is_dir() and path.name.startswith('split_') and (path / SUMMARY_FILE).exists()
+    )
+    return available
+
+
+def discover_runs(runs_root: Path | str, *, dataset_path: Path | str | None = None) -> pd.DataFrame:
     """List the evaluation runs under a directory, one row per run.
 
     A directory counts as a run when it holds at least one prediction, which
@@ -206,11 +230,18 @@ def discover_runs(runs_root: Path | str) -> pd.DataFrame:
     predating the flag report the API default with ``video_fps_source`` set to
     ``inferred`` — the value was never written down, so it must not be presented
     as though it had been.
+
+    Passing ``dataset_path`` adds ``content`` — what the directory actually holds,
+    counted per MLPSD split. A run's recorded ``split`` says what was requested;
+    ``content`` says what is there, and the two differ for every directory that
+    was filled before the flag existed.
     """
     root = Path(runs_root)
     rows: list[dict[str, object]] = []
     if not root.exists():
         return pd.DataFrame(rows)
+
+    split_index = load_split_index(dataset_path) if dataset_path is not None else None
 
     for run_dir in sorted(path for path in root.iterdir() if path.is_dir()):
         prediction_count = _run_predictions_count(run_dir)
@@ -219,6 +250,15 @@ def discover_runs(runs_root: Path | str) -> pd.DataFrame:
 
         config = _read_config(run_dir)
         recorded_fps = config.get("video_fps")
+        content = _NA
+        if split_index is not None:
+            keys = []
+            for labels_path in run_dir.rglob("labels_npy/*.npy"):
+                try:
+                    keys.append(mlpsd_key_for_prediction(run_dir, labels_path))
+                except ValueError:
+                    continue
+            content = format_composition(split_index.compose(keys))
         rows.append(
             {
                 "run": run_dir.name,
@@ -229,7 +269,9 @@ def discover_runs(runs_root: Path | str) -> pd.DataFrame:
                 "thinking_level": config.get("thinking_level", _NA),
                 "prompt_version": config.get("prompt_version", _NA),
                 "predictions": prediction_count,
-                "has_metrics": (run_dir / "metrics" / SUMMARY_FILE).exists(),
+                "split_requested": config.get("split", _NA),
+                "content": content,
+                "metrics_for": ", ".join(_available_metric_splits(run_dir)) or _NA,
                 "results_root": run_dir,
             }
         )
@@ -241,7 +283,7 @@ def _describe_runs(runs: pd.DataFrame) -> str:
         return "  (none)"
     return "\n".join(
         f"  model={row['model']} video_fps={row['video_fps']:g} "
-        f"metrics={'yes' if row['has_metrics'] else 'no'}  -> {row['run']}"
+        f"metrics_for=[{row['metrics_for']}]  -> {row['run']}"
         for _, row in runs.iterrows()
     )
 
@@ -281,9 +323,54 @@ def load_run_report(
     *,
     model: str | None = None,
     video_fps: float | None = None,
+    split: str | None = DEFAULT_SPLIT,
 ) -> MetricsReport:
     """Discover runs under ``runs_root`` and load the one matching model and fps."""
-    return load_metrics_report(select_run(discover_runs(runs_root), model=model, video_fps=video_fps))
+    chosen = select_run(discover_runs(runs_root), model=model, video_fps=video_fps)
+    return load_metrics_report(chosen, split=split)
+
+
+
+def annotate_results_with_split(
+    results_df: pd.DataFrame,
+    results_root: Path | str,
+    *,
+    dataset_path: Path | str,
+) -> pd.DataFrame:
+    """Add a ``dataset_split`` column to the prediction table used for browsing."""
+    if results_df.empty:
+        return results_df
+    root = Path(results_root)
+    split_index = load_split_index(dataset_path)
+
+    def _split_for(prediction_path: object) -> str:
+        try:
+            return split_index.split_for(mlpsd_key_for_prediction(root, Path(str(prediction_path))))
+        except ValueError:
+            return 'unmatched'
+
+    annotated = results_df.copy()
+    annotated['dataset_split'] = annotated['prediction_path'].map(_split_for)
+    return annotated
+
+
+def filter_results_by_split(
+    results_df: pd.DataFrame,
+    results_root: Path | str,
+    *,
+    split: str | None,
+    dataset_path: Path | str,
+) -> pd.DataFrame:
+    """Keep only the predictions belonging to ``split``.
+
+    This filters the *browsing* table only. Metrics are never filtered here —
+    they come pre-computed from ``cli.py evaluate``, so the notebook cannot show
+    a number the CLI did not produce.
+    """
+    annotated = annotate_results_with_split(results_df, results_root, dataset_path=dataset_path)
+    if annotated.empty or split in (None, 'all'):
+        return annotated
+    return annotated[annotated['dataset_split'] == split].reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -515,6 +602,9 @@ def run_header(report: MetricsReport) -> pd.DataFrame:
             'video_fps',
             f"{float(recorded_fps):g}" if recorded_fps is not None else f'{PRE_FLAG_VIDEO_FPS:g} (inferred, pre-flag run)',
         ),
+        ('split', report.split or _NA),
+        ('evaluated_in_split', summary.get('evaluated', _NA)),
+        ('skipped_by_split', summary.get('skipped_by_split', _NA)),
         ('media_processing', config.get('media_processing', _NA)),
         ('thinking_level', config.get('thinking_level', _NA)),
         ('dataset_path', Path(str(summary.get('dataset_path', ''))).name or _NA),
@@ -536,7 +626,7 @@ def staleness_warning(report: MetricsReport) -> str | None:
     return (
         f'Predictions changed at {report.newest_labels_at:%Y-%m-%d %H:%M}, after the metrics '
         f'were computed at {report.evaluated_at:%Y-%m-%d %H:%M}. The tables below are stale.\n'
-        f'Re-run:\n    {_evaluate_command(report.results_root)}'
+        f'Re-run:\n    {_evaluate_command(report.results_root, report.split)}'
     )
 
 

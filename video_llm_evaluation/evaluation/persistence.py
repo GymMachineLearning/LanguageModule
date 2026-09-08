@@ -105,6 +105,7 @@ def _prediction_to_json_payload(
     prompt_version: str,
     video_fps: float | None = None,
     media_processing: str | None = None,
+    split: str | None = None,
 ) -> dict[str, object]:
     return {
         "video_id": prediction.video_id,
@@ -116,6 +117,7 @@ def _prediction_to_json_payload(
         # that does not record this cannot be audited later.
         "video_fps": video_fps,
         "media_processing": media_processing,
+        "split": split,
         "predictions": [
             {
                 "error_type": item.error_type,
@@ -137,6 +139,7 @@ def save_prediction_json(
     prompt_version: str = DEFAULT_PROMPT_VERSION,
     video_fps: float | None = None,
     media_processing: str | None = None,
+    split: str | None = None,
 ) -> Path:
     paths = ensure_run_structure(run_dir)
     out_path = paths.predictions_dir / f"{prediction.video_id}.json"
@@ -148,6 +151,7 @@ def save_prediction_json(
             prompt_version=prompt_version,
             video_fps=video_fps,
             media_processing=media_processing,
+            split=split,
         ),
     )
     return out_path
@@ -195,9 +199,30 @@ def save_segments_csv(run_dir: Path | str, rows: Sequence[Mapping[str, object]])
     return out_path
 
 
-def save_metrics_rows(run_dir: Path | str, filename: str, rows: Sequence[Mapping[str, object]]) -> Path:
-    paths = ensure_run_structure(run_dir)
-    out_path = paths.metrics_dir / filename
+def metrics_dir_for_split(run_dir: Path | str, split: str | None) -> Path:
+    """Where metrics for one split live.
+
+    Unfiltered runs keep ``metrics/`` so existing trees stay readable; a filtered
+    run gets its own subdirectory, so test metrics and full-set metrics can sit
+    side by side instead of one silently overwriting the other.
+    """
+    metrics_dir = make_run_paths(run_dir).metrics_dir
+    if split in (None, "all"):
+        return metrics_dir
+    return metrics_dir / f"split_{split}"
+
+
+def save_metrics_rows(
+    run_dir: Path | str,
+    filename: str,
+    rows: Sequence[Mapping[str, object]],
+    *,
+    split: str | None = None,
+) -> Path:
+    ensure_run_structure(run_dir)
+    target_dir = metrics_dir_for_split(run_dir, split)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    out_path = target_dir / filename
     if not rows:
         out_path.write_text("", encoding="utf-8")
         return out_path
@@ -210,9 +235,9 @@ def save_metrics_rows(run_dir: Path | str, filename: str, rows: Sequence[Mapping
     return out_path
 
 
-def save_summary_json(run_dir: Path | str, payload: Mapping[str, object]) -> Path:
-    paths = ensure_run_metadata_structure(run_dir)
-    out_path = paths.metrics_dir / "summary.json"
+def save_summary_json(run_dir: Path | str, payload: Mapping[str, object], *, split: str | None = None) -> Path:
+    ensure_run_metadata_structure(run_dir)
+    out_path = metrics_dir_for_split(run_dir, split) / "summary.json"
     save_json(out_path, payload)
     return out_path
 

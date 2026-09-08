@@ -23,12 +23,23 @@ from video_llm_evaluation.constants import (
     AGENTIC_CAPABLE_MODEL_PREFIXES,
     DEFAULT_MEDIA_PROCESSING,
     DEFAULT_THINKING_LEVEL,
+    DEFAULT_SPLIT,
     DEFAULT_VIDEO_FPS,
     ERROR_CLASSES,
     MLPSD_ERROR_ROW_INDICES,
 )
+from video_llm_evaluation.dataset_split import (
+    SPLIT_CHOICES,
+    format_composition,
+    load_split_index,
+    mlpsd_key_for_prediction,
+    mlpsd_key_for_video,
+    normalise_video_key,
+    UNMATCHED,
+)
 from video_llm_evaluation.discovery import discover_videos
 from video_llm_evaluation.evaluation.persistence import (
+    metrics_dir_for_split,
     append_case_result,
     append_failure,
     save_config,
@@ -50,7 +61,6 @@ DEFAULT_MLPSD_DATASET_PATH = (
     REPO_ROOT.parents[1] / "dataset/datasets/MLPSD/final_dataset/latest/MLPSD_v2.0_feature_extracted_v3.0.0_all_with_holistic_phases.pkl"
 ).resolve()
 
-RESULTS_TO_MLPSD_FOLDER = {"formtext": "formcheck_text"}
 
 
 LOGGER_NAME = "video_llm_evaluation"
@@ -114,6 +124,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--skip-existing", action="store_true", default=False)
     run_parser.add_argument(
+        "--split",
+        type=str,
+        default=DEFAULT_SPLIT,
+        choices=list(SPLIT_CHOICES),
+        help=f"Only send recordings from this MLPSD split (default {DEFAULT_SPLIT}; 'all' disables filtering).",
+    )
+    run_parser.add_argument("--dataset-path", type=Path, default=DEFAULT_MLPSD_DATASET_PATH)
+    run_parser.add_argument(
         "--video-fps",
         "--video_fps",
         dest="video_fps",
@@ -149,6 +167,13 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate_parser = subparsers.add_parser("evaluate", help="Evaluate saved LLM labels against MLPSD ground truth")
     evaluate_parser.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
     evaluate_parser.add_argument("--dataset-path", type=Path, default=DEFAULT_MLPSD_DATASET_PATH)
+    evaluate_parser.add_argument(
+        "--split",
+        type=str,
+        default=DEFAULT_SPLIT,
+        choices=list(SPLIT_CHOICES),
+        help=f"Only evaluate recordings from this MLPSD split (default {DEFAULT_SPLIT}; 'all' disables filtering).",
+    )
     evaluate_parser.add_argument(
         "--max-frame-difference",
         type=int,
@@ -260,8 +285,37 @@ def _run(args: argparse.Namespace) -> None:
         )
 
     discovered = discover_videos(videos_root, results_root)
+
+    split_index = load_split_index(args.dataset_path)
+    keys_by_video = {item.video_id: mlpsd_key_for_video(videos_root, item.video_path) for item in discovered}
+    logger.info(
+        "Discovered %s videos; MLPSD composition: %s",
+        len(discovered),
+        format_composition(split_index.compose(keys_by_video.values())),
+    )
+    if args.split != "all":
+        eligible = [item for item in discovered if split_index.matches(keys_by_video[item.video_id], args.split)]
+        logger.info(
+            "Split filter %r keeps %s of %s videos; %s are excluded and will not be sent to the model.",
+            args.split,
+            len(eligible),
+            len(discovered),
+            len(discovered) - len(eligible),
+        )
+        if not eligible:
+            raise RuntimeError(
+                f"No discovered video belongs to split {args.split!r}. "
+                f"Composition was: {format_composition(split_index.compose(keys_by_video.values()))}"
+            )
+        discovered = eligible
+
     selected = _select_videos(discovered, args.max_request, args.seed, videos_root=videos_root, preferred_folder=args.preferred_folder)
-    logger.info("Discovered %s videos, selected %s", len(discovered), len(selected))
+    logger.info(
+        "Selected %s videos for split=%s (%s)",
+        len(selected),
+        args.split,
+        format_composition(split_index.compose(keys_by_video[item.video_id] for item in selected)),
+    )
 
     save_config(
         results_root,
@@ -271,6 +325,8 @@ def _run(args: argparse.Namespace) -> None:
             "max_request": args.max_request,
             "seed": args.seed,
             "model_name": args.model_name,
+            "split": args.split,
+            "dataset_path": str(args.dataset_path),
             "video_fps": args.video_fps,
             "media_processing": args.media_processing,
             "media_resolution": args.media_resolution,
@@ -336,6 +392,7 @@ def _run(args: argparse.Namespace) -> None:
                 prompt_version=client.prompt_builder.prompt_version,
                 video_fps=args.video_fps,
                 media_processing=args.media_processing,
+                split=args.split,
             )
             labels_npy_path = save_labels_npy(run_paths, item.video_id, labels)
             labels_csv_path = save_labels_csv(run_paths, item.video_id, labels, fps=item.fps)
@@ -402,6 +459,13 @@ def _run(args: argparse.Namespace) -> None:
         for item in selected:
             writer.writerow([item.video_id, str(item.video_path), item.duration_s, item.fps, item.num_frames, ""])
 
+    directory_keys = [mlpsd_key_for_prediction(results_root, path) for path in results_root.rglob("labels_npy/*.npy")]
+    logger.info(
+        "Results directory now holds %s predictions; composition: %s",
+        len(directory_keys),
+        format_composition(split_index.compose(directory_keys)),
+    )
+
     total_elapsed_s = round(time.perf_counter() - run_started_perf, 3)
     summary = {
         "run_started_at": run_started_at,
@@ -418,20 +482,6 @@ def _run(args: argparse.Namespace) -> None:
     }
     save_json(results_root / "metrics" / "run_summary.json", summary)
     logger.info("SUMMARY processed=%s succeeded=%s failed=%s skipped=%s total_elapsed=%.3fs log_path=%s", totals["processed"], totals["succeeded"], totals["failed"], totals["skipped"], total_elapsed_s, log_path)
-
-
-def _normalise_video_key(value: str | Path) -> str:
-    path = Path(str(value))
-    return str(path.with_suffix("")).replace("\\", "/").casefold()
-
-
-def _mlpsd_key_for_prediction(results_root: Path, labels_path: Path) -> str:
-    relative_dir = labels_path.parent.parent.relative_to(results_root)
-    relative_parts = list(relative_dir.parts)
-    if len(relative_parts) < 2:
-        raise ValueError(f"Unexpected prediction layout: {labels_path}")
-    relative_parts[0] = RESULTS_TO_MLPSD_FOLDER.get(relative_parts[0], relative_parts[0])
-    return "/".join(("squats", *relative_parts)).casefold()
 
 
 def _safe_divide(numerator: float, denominator: float) -> float:
@@ -534,8 +584,12 @@ def _evaluate(args: argparse.Namespace) -> None:
         raise ValueError(f"MLPSD dataset is missing columns: {', '.join(sorted(missing_columns))}")
 
     dataset_by_key: dict[str, list[Any]] = {}
+    split_by_key: dict[str, str] = {}
     for _, row in dataset_df.iterrows():
-        dataset_by_key.setdefault(_normalise_video_key(row["video_path"]), []).append(row)
+        key = normalise_video_key(row["video_path"])
+        dataset_by_key.setdefault(key, []).append(row)
+        if "dataset_split" in dataset_df.columns:
+            split_by_key[key] = str(row["dataset_split"])
 
     labels_paths = sorted(args.results_root.rglob("labels_npy/*.npy"))
     if not labels_paths:
@@ -550,8 +604,28 @@ def _evaluate(args: argparse.Namespace) -> None:
 
     for labels_path in labels_paths:
         video_id = labels_path.stem
+        recording_split = UNMATCHED
         try:
-            dataset_key = _mlpsd_key_for_prediction(args.results_root, labels_path)
+            dataset_key = mlpsd_key_for_prediction(args.results_root, labels_path)
+            recording_split = split_by_key.get(dataset_key, UNMATCHED)
+            if args.split != "all" and recording_split != args.split:
+                # Recorded rather than dropped: evaluation_cases.csv answers
+                # "what happened to everything I sent", and a row vanishing from
+                # it turns a deliberate exclusion into an invisible one.
+                case_rows.append(
+                    {
+                        "video_id": video_id,
+                        "status": "skipped_split",
+                        "dataset_split": recording_split,
+                        "alignment": "",
+                        "prediction_frames": "",
+                        "ground_truth_frames": "",
+                        "mlpsd_video_path": "",
+                        "message": f"not in split {args.split!r} (is {recording_split!r})",
+                    }
+                )
+                continue
+
             matches = dataset_by_key.get(dataset_key, [])
             if not matches:
                 raise ValueError(f"no MLPSD recording matches {dataset_key}")
@@ -609,6 +683,7 @@ def _evaluate(args: argparse.Namespace) -> None:
                 {
                     "video_id": video_id,
                     "status": "evaluated",
+                    "dataset_split": recording_split,
                     "alignment": alignment,
                     "prediction_frames": pred_labels.shape[1],
                     "ground_truth_frames": gt_labels.shape[1],
@@ -621,6 +696,7 @@ def _evaluate(args: argparse.Namespace) -> None:
                 {
                     "video_id": video_id,
                     "status": "skipped",
+                    "dataset_split": recording_split,
                     "alignment": "",
                     "prediction_frames": "",
                     "ground_truth_frames": "",
@@ -629,38 +705,47 @@ def _evaluate(args: argparse.Namespace) -> None:
                 }
             )
 
+    skipped_by_split_so_far = sum(row["status"] == "skipped_split" for row in case_rows)
     if not all_gt_labels:
-        raise RuntimeError("No recordings could be evaluated; inspect metrics/evaluation_cases.csv")
+        raise RuntimeError(
+            f"No recordings could be evaluated for split={args.split!r}. "
+            f"Of {len(labels_paths)} predictions, {skipped_by_split_so_far} were outside the split. "
+            f"Inspect evaluation_cases.csv, or re-run with --split all."
+        )
 
     aggregate_frame = frame_metrics(np.concatenate(all_gt_labels, axis=1), np.concatenate(all_pred_labels, axis=1))
     aggregate_video = _aggregate_video_metrics(video_rows)
     aggregate_segment = _aggregate_segment_metrics(segment_rows)
 
-    save_metrics_rows(args.results_root, "evaluation_cases.csv", case_rows)
-    save_metrics_rows(args.results_root, "frame_metrics_by_video.csv", frame_rows)
-    save_metrics_rows(args.results_root, "video_level_metrics_by_video.csv", video_rows)
-    save_metrics_rows(args.results_root, "segment_metrics_by_video.csv", segment_rows)
-    save_metrics_rows(args.results_root, "frame_metrics.csv", aggregate_frame["per_class"])
-    save_metrics_rows(args.results_root, "video_level_metrics.csv", aggregate_video["per_class"])
-    save_metrics_rows(args.results_root, "segment_metrics.csv", aggregate_segment)
+    save_metrics_rows(args.results_root, "evaluation_cases.csv", split=args.split, rows=case_rows)
+    save_metrics_rows(args.results_root, "frame_metrics_by_video.csv", split=args.split, rows=frame_rows)
+    save_metrics_rows(args.results_root, "video_level_metrics_by_video.csv", split=args.split, rows=video_rows)
+    save_metrics_rows(args.results_root, "segment_metrics_by_video.csv", split=args.split, rows=segment_rows)
+    save_metrics_rows(args.results_root, "frame_metrics.csv", split=args.split, rows=aggregate_frame["per_class"])
+    save_metrics_rows(args.results_root, "video_level_metrics.csv", split=args.split, rows=aggregate_video["per_class"])
+    save_metrics_rows(args.results_root, "segment_metrics.csv", split=args.split, rows=aggregate_segment)
 
     evaluated = sum(row["status"] == "evaluated" for row in case_rows)
+    skipped_by_split = sum(row["status"] == "skipped_split" for row in case_rows)
     summary = {
         "dataset_path": str(args.dataset_path),
         "results_root": str(args.results_root),
+        "split": args.split,
         "found_predictions": len(labels_paths),
         "evaluated": evaluated,
         "skipped": len(case_rows) - evaluated,
+        "skipped_by_split": skipped_by_split,
         "mlpsd_error_row_indices": list(MLPSD_ERROR_ROW_INDICES),
         "frame_metrics": {key: value for key, value in aggregate_frame.items() if key != "per_class"},
         "video_metrics": {key: value for key, value in aggregate_video.items() if key != "per_class"},
         "segment_metrics": aggregate_segment,
     }
-    save_summary_json(args.results_root, summary)
+    save_summary_json(args.results_root, summary, split=args.split)
     print(
         json.dumps(
             {
-                "summary_path": str(args.results_root / "metrics" / "summary.json"),
+                "summary_path": str(metrics_dir_for_split(args.results_root, args.split) / "summary.json"),
+                "split": args.split,
                 "found_predictions": len(labels_paths),
                 "evaluated": evaluated,
                 "skipped": len(case_rows) - evaluated,

@@ -39,6 +39,7 @@ class EvaluateCliTests(unittest.TestCase):
                 [
                     {
                         "video_path": "squats/formcheck/clip_a.mp4",
+                        "dataset_split": "test",
                         "labels": ground_truth,
                         "fps": 30.0,
                         "frames": 4,
@@ -48,13 +49,17 @@ class EvaluateCliTests(unittest.TestCase):
 
             main(["evaluate", "--results-root", str(results_root), "--dataset-path", str(dataset_path)])
 
-            summary_path = results_root / "metrics" / "summary.json"
+            # The default split is `test`, so metrics land beside the full-set
+            # ones rather than replacing them.
+            self.assertFalse((results_root / "metrics" / "summary.json").exists())
+            summary_path = results_root / "metrics" / "split_test" / "summary.json"
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["evaluated"], 1)
             self.assertEqual(summary["skipped"], 0)
             self.assertEqual(summary["frame_metrics"]["micro_f1"], 1.0)
+            self.assertEqual(summary["split"], "test")
 
-            frame_rows = pd.read_csv(results_root / "metrics" / "frame_metrics.csv")
+            frame_rows = pd.read_csv(results_root / "metrics" / "split_test" / "frame_metrics.csv")
             self.assertEqual(
                 set(frame_rows["error_type"]),
                 {

@@ -251,9 +251,9 @@ class DiscoverRunsTests(unittest.TestCase):
         self.assertEqual(row["video_fps"], reporting.PRE_FLAG_VIDEO_FPS)
         self.assertEqual(row["video_fps_source"], "inferred")
 
-    def test_missing_metrics_are_visible_in_the_table(self) -> None:
-        self.assertFalse(bool(self.runs[self.runs["run"] == "squat__flash__fps2"].iloc[0]["has_metrics"]))
-        self.assertTrue(bool(self.runs[self.runs["run"] == "squat"].iloc[0]["has_metrics"]))
+    def test_which_splits_have_metrics_is_visible_in_the_table(self) -> None:
+        self.assertEqual(self.runs[self.runs["run"] == "squat__flash__fps2"].iloc[0]["metrics_for"], "\u2014")
+        self.assertEqual(self.runs[self.runs["run"] == "squat"].iloc[0]["metrics_for"], "all")
 
     def test_an_empty_root_yields_an_empty_table(self) -> None:
         self.assertTrue(reporting.discover_runs(Path(self._temp.name) / "nope").empty)
@@ -292,15 +292,15 @@ class SelectRunTests(unittest.TestCase):
         self.assertIn("gemini-3.1-pro-preview", str(context.exception))
 
     def test_load_run_report_resolves_and_loads_in_one_step(self) -> None:
-        report = reporting.load_run_report(self.runs_root, model="gemini-3.8-flash", video_fps=2.0)
+        report = reporting.load_run_report(self.runs_root, split="all", model="gemini-3.8-flash", video_fps=2.0)
         self.assertEqual(report.results_root.name, "squat__flash__fps2")
 
     def test_run_header_flags_an_inferred_frame_rate(self) -> None:
-        report = reporting.load_run_report(self.runs_root, model="gemini-3.1-pro-preview", video_fps=1.0)
+        report = reporting.load_run_report(self.runs_root, split="all", model="gemini-3.1-pro-preview", video_fps=1.0)
         self.assertIn("inferred", str(reporting.run_header(report).loc["video_fps", "value"]))
 
     def test_run_header_shows_a_recorded_frame_rate_plainly(self) -> None:
-        report = reporting.load_run_report(self.runs_root, model="gemini-3.8-flash", video_fps=2.0)
+        report = reporting.load_run_report(self.runs_root, split="all", model="gemini-3.8-flash", video_fps=2.0)
         self.assertEqual(reporting.run_header(report).loc["video_fps", "value"], "2")
 
 
@@ -387,7 +387,7 @@ class LoadMetricsReportTests(unittest.TestCase):
             results_root = Path(temp_dir) / "results"
             results_root.mkdir()
             with self.assertRaises(reporting.MetricsNotAvailable) as context:
-                reporting.load_metrics_report(results_root)
+                reporting.load_metrics_report(results_root, split="all")
         self.assertIn("video_llm_evaluation.cli evaluate", str(context.exception))
 
     def test_empty_metrics_directory_is_reported_as_not_available(self) -> None:
@@ -395,7 +395,7 @@ class LoadMetricsReportTests(unittest.TestCase):
             results_root = Path(temp_dir) / "results"
             (results_root / "metrics").mkdir(parents=True)
             with self.assertRaises(reporting.MetricsNotAvailable):
-                reporting.load_metrics_report(results_root)
+                reporting.load_metrics_report(results_root, split="all")
 
     def test_incomplete_metrics_directory_names_the_missing_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -403,14 +403,14 @@ class LoadMetricsReportTests(unittest.TestCase):
             _write_metrics(results_root)
             (results_root / "metrics" / "segment_metrics.csv").unlink()
             with self.assertRaises(reporting.MetricsNotAvailable) as context:
-                reporting.load_metrics_report(results_root)
+                reporting.load_metrics_report(results_root, split="all")
         self.assertIn("segment_metrics.csv", str(context.exception))
 
     def test_report_loads_every_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             results_root = Path(temp_dir) / "results"
             _write_metrics(results_root)
-            report = reporting.load_metrics_report(results_root)
+            report = reporting.load_metrics_report(results_root, split="all")
 
         self.assertEqual(report.summary["evaluated"], 2)
         self.assertEqual(report.evaluated_video_ids, ["clip_a", "clip_b"])
@@ -430,7 +430,7 @@ class LoadMetricsReportTests(unittest.TestCase):
             future = time.time() + 120
             os.utime(labels_path, (future, future))
 
-            report = reporting.load_metrics_report(results_root)
+            report = reporting.load_metrics_report(results_root, split="all")
 
         self.assertTrue(report.is_stale)
         self.assertIn("stale", reporting.staleness_warning(report))
@@ -441,7 +441,7 @@ class PerClassViewTests(unittest.TestCase):
         self._temp = tempfile.TemporaryDirectory()
         self.results_root = Path(self._temp.name) / "results"
         _write_metrics(self.results_root)
-        self.report = reporting.load_metrics_report(self.results_root)
+        self.report = reporting.load_metrics_report(self.results_root, split="all")
 
     def tearDown(self) -> None:
         self._temp.cleanup()

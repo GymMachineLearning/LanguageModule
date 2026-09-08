@@ -86,6 +86,7 @@ python -m video_llm_evaluation.cli run \
 
 | flaga | domyślnie | do czego |
 |---|---|---|
+| `--split` | **`test`** | z którego splitu MLPSD wysyłać nagrania |
 | `--results-root` | `results/llm_evaluation/squat` | gdzie lądują wyniki |
 | `--model-name` | `gemini-3.1-pro-preview` | model |
 | `--video-fps` | `2.0` | ile klatek na sekundę widzi model |
@@ -96,6 +97,35 @@ python -m video_llm_evaluation.cli run \
 | `--skip-existing` | wyłączone | pomija nagrania z gotową predykcją |
 | `--preferred-folder` | brak | podfolder brany w pierwszej kolejności |
 | `--seed` | `42` | losowanie przy `--max-request` |
+| `--dataset-path` | ścieżka do MLPSD `.pkl` | źródło informacji o splicie |
+
+### `--split` — domyślnie tylko nagrania testowe
+
+Split pochodzi z kolumny `dataset_split` w `.pkl` MLPSD. Rozkład dla biblioteki
+451 nagrań na dysku:
+
+| `--split` | nagrań wysłanych |
+|---|---|
+| `test` (domyślnie) | **42** |
+| `val` | 41 |
+| `train` | 179 |
+| `all` | 451 |
+
+189 nagrań nie ma odpowiednika w MLPSD — nie mają przypisanego splitu, więc
+wypadają przy każdej wartości poza `all`. Log przy każdym runie podaje pełny
+skład, żeby ta strata nie była cicha:
+
+```
+Discovered 451 videos; MLPSD composition: train:179 val:41 test:42 unmatched:189
+Split filter 'test' keeps 42 of 451 videos; 409 are excluded and will not be sent to the model.
+```
+
+**Domyślne `test` oznacza, że `run` bez flagi pominie 91% biblioteki.** Tak jest
+celowo — ewaluacja modelu na zbiorze treningowym nie jest ewaluacją — ale
+pamiętaj o tym, jeśli kiedyś chcesz przepuścić wszystko: `--split all`.
+
+Jeden katalog wyników może zawierać nagrania z różnych splitów; filtrowanie
+odbywa się dopiero przy `evaluate` i w notebooku.
 
 ### Nazwa katalogu wyników ma znaczenie
 
@@ -170,8 +200,28 @@ Bez API, bez kosztu. Bierze `labels_npy/*.npy`, dopasowuje do nagrań w pliku
 | flaga | domyślnie | do czego |
 |---|---|---|
 | `--results-root` | `results/llm_evaluation/squat` | który run oceniać |
-| `--dataset-path` | ścieżka do MLPSD `.pkl` | ground truth |
+| `--dataset-path` | ścieżka do MLPSD `.pkl` | ground truth i splity |
+| `--split` | **`test`** | który split oceniać |
 | `--max-frame-difference` | `1` | tolerancja rozjazdu liczby klatek |
+
+### `--split` przy ewaluacji, i dlaczego metryki się nie nadpisują
+
+`evaluate --split test` liczy metryki **wyłącznie** na nagraniach testowych,
+niezależnie od tego, co jeszcze leży w katalogu. Wyniki lądują w osobnym
+podkatalogu, więc różne splity współistnieją:
+
+```
+metrics/                  ← --split all
+├── summary.json
+├── frame_metrics.csv
+└── split_test/           ← --split test
+    ├── summary.json
+    └── frame_metrics.csv
+```
+
+Dzięki temu `evaluate --split all` nie zniszczy wyników testowych policzonych
+wcześniej. Nagrania spoza splitu trafiają do `evaluation_cases.csv` ze statusem
+`skipped_split` i kolumną `dataset_split` — widać, co pominięto i dlaczego.
 
 ### Trzy poziomy metryk
 
@@ -221,7 +271,18 @@ Komórka wypisuje dostępne runy, potem wybierasz dwiema zmiennymi:
 ```python
 SELECTED_MODEL = 'gemini-3.8-flash'
 SELECTED_FPS = 2.0
+SELECTED_SPLIT = 'test'
 ```
+
+`SELECTED_MODEL` i `SELECTED_FPS` wybierają **run**; `SELECTED_SPLIT` wybiera
+**widok** na niego: z którego katalogu metryk czytać i do czego ograniczyć listę
+nagrań do przeglądania. Metryki nigdy nie są filtrowane w notebooku — robi to
+`evaluate`, żeby notebook nie mógł pokazać liczby, której CLI nie policzyło.
+
+Tabela runów ma kolumnę `content` z faktycznym składem katalogu
+(`train:8 val:4 test:3 unmatched:10`) oraz `metrics_for` z listą splitów, dla
+których metryki już istnieją. `content` liczony jest z zawartości, nie z configu
+— to jedyny sposób, by zobaczyć skład katalogów zapełnionych przed dodaniem flagi.
 
 Kolumna `video_fps_source`:
 - `recorded` — wartość zapisana przez pipeline,

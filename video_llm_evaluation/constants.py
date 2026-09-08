@@ -24,6 +24,10 @@ DEFAULT_VIDEO_FPS = 2.0
 # it to AGENTIC, under which video_fps is ignored entirely.
 DEFAULT_MEDIA_PROCESSING = "STATIC"
 
+# Which MLPSD split the pipeline works on by default. Only recordings in this
+# split are sent to the model, evaluated and reported; "all" disables filtering.
+DEFAULT_SPLIT = "test"
+
 # One of MINIMAL / LOW / MEDIUM / HIGH, or None for the API default.
 DEFAULT_THINKING_LEVEL = "MEDIUM"
 
