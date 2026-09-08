@@ -98,12 +98,24 @@ def save_manifest_resolved(run_dir: Path | str, rows: Sequence[ManifestRow]) -> 
     return paths.manifest_path
 
 
-def _prediction_to_json_payload(prediction: VideoPrediction, *, model_name: str, prompt_version: str) -> dict[str, object]:
+def _prediction_to_json_payload(
+    prediction: VideoPrediction,
+    *,
+    model_name: str,
+    prompt_version: str,
+    video_fps: float | None = None,
+    media_processing: str | None = None,
+) -> dict[str, object]:
     return {
         "video_id": prediction.video_id,
         "duration_s": prediction.duration_s,
         "model_name": model_name,
         "prompt_version": prompt_version,
+        # Sampling conditions travel with the prediction: two runs of the same
+        # model at different frame rates are not comparable, and a results tree
+        # that does not record this cannot be audited later.
+        "video_fps": video_fps,
+        "media_processing": media_processing,
         "predictions": [
             {
                 "error_type": item.error_type,
@@ -117,10 +129,27 @@ def _prediction_to_json_payload(prediction: VideoPrediction, *, model_name: str,
     }
 
 
-def save_prediction_json(run_dir: Path | str, prediction: VideoPrediction, *, model_name: str = DEFAULT_MODEL_NAME, prompt_version: str = DEFAULT_PROMPT_VERSION) -> Path:
+def save_prediction_json(
+    run_dir: Path | str,
+    prediction: VideoPrediction,
+    *,
+    model_name: str = DEFAULT_MODEL_NAME,
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
+    video_fps: float | None = None,
+    media_processing: str | None = None,
+) -> Path:
     paths = ensure_run_structure(run_dir)
     out_path = paths.predictions_dir / f"{prediction.video_id}.json"
-    save_json(out_path, _prediction_to_json_payload(prediction, model_name=model_name, prompt_version=prompt_version))
+    save_json(
+        out_path,
+        _prediction_to_json_payload(
+            prediction,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            video_fps=video_fps,
+            media_processing=media_processing,
+        ),
+    )
     return out_path
 
 

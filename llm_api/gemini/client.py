@@ -97,6 +97,57 @@ class GeminiClient:
     ):
         return self.response_parser.parse(raw_response, video_id=video_id, duration_s=duration_s)
 
+    def available_model_names(self) -> list[str]:
+        """Model ids the API currently exposes, without the ``models/`` prefix."""
+        if self.client is None:
+            raise RuntimeError("GeminiClient is not initialized with a live SDK client.")
+        return [str(model.name).removeprefix("models/") for model in self.client.models.list()]
+
+    def verify_model_available(self) -> None:
+        """Fail before any upload if the configured model name is not served.
+
+        Without this a typo surfaces only after the first video has been uploaded
+        and processed, so the cost of the mistake scales with the batch.
+        """
+        available = self.available_model_names()
+        if self.config.model_name in available:
+            return
+        near = [name for name in available if name.startswith(self.config.model_name.split("-preview")[0][:14])]
+        hint = f" Did you mean one of: {', '.join(sorted(near)[:5])}?" if near else ""
+        raise ValueError(f"Model {self.config.model_name!r} is not available on this API key.{hint}")
+
+    def build_video_part(self, uploaded_video: Any) -> Any:
+        """Wrap an uploaded file so frame sampling is explicit rather than inherited.
+
+        ``video_fps`` only takes effect under STATIC media processing, so the two
+        always travel together.
+        """
+        types = _load_google_genai().types
+        part_kwargs: dict[str, Any] = {}
+        if self.config.video_fps:
+            part_kwargs["video_metadata"] = types.VideoMetadata(fps=float(self.config.video_fps))
+        if self.config.media_processing:
+            part_kwargs["media_processing"] = self.config.media_processing
+        if self.config.media_resolution:
+            # Part takes a PartMediaResolution object, unlike GenerateContentConfig
+            # which takes the bare enum. Setting it per-part is the finer control
+            # and is the only place that accepts ULTRA_HIGH.
+            part_kwargs["media_resolution"] = types.PartMediaResolution(level=self.config.media_resolution)
+        return types.Part(
+            file_data=types.FileData(
+                file_uri=uploaded_video.uri,
+                mime_type=getattr(uploaded_video, "mime_type", "video/mp4"),
+            ),
+            **part_kwargs,
+        )
+
+    def build_request_config(self) -> dict[str, Any]:
+        config: dict[str, Any] = {"temperature": self.config.temperature}
+        if self.config.thinking_level:
+            types = _load_google_genai().types
+            config["thinking_config"] = types.ThinkingConfig(thinking_level=self.config.thinking_level)
+        return config
+
     def generate(self, *, video_path: str, video_id: str, duration_s: float) -> Any:
         if self.client is None:
             raise RuntimeError(
@@ -109,6 +160,10 @@ class GeminiClient:
         uploaded_video = _wait_for_active_file(self.client, uploaded_video)
         return self.client.models.generate_content(
             model=self.config.model_name,
-            contents=[prompts["system_prompt"], prompts["user_prompt"], uploaded_video],
-            config={"temperature": self.config.temperature},
+            contents=[
+                prompts["system_prompt"],
+                prompts["user_prompt"],
+                self.build_video_part(uploaded_video),
+            ],
+            config=self.build_request_config(),
         )

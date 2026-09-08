@@ -202,6 +202,108 @@ def _render_card(report, error_type: str, *, per_video: bool) -> list[str]:
     return _capture(lambda: reporting.show_class_card(report, error_type, per_video=per_video))
 
 
+
+def _write_run(runs_root: Path, name: str, *, model: str, video_fps: float | None, predictions: int = 2, metrics: bool = True) -> Path:
+    """Lay out a run directory the way `cli.py run` does."""
+    run_dir = runs_root / name
+    for index in range(predictions):
+        prediction_dir = run_dir / "formcheck" / f"clip_{index}" / "predictions_json"
+        prediction_dir.mkdir(parents=True, exist_ok=True)
+        (prediction_dir / f"clip_{index}.json").write_text(json.dumps({"video_id": f"clip_{index}"}), encoding="utf-8")
+
+    config = {"model_name": model, "media_processing": "STATIC", "prompt_version": "v1"}
+    if video_fps is not None:
+        config["video_fps"] = video_fps
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+
+    if metrics:
+        _write_metrics(run_dir)
+    return run_dir
+
+
+class DiscoverRunsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.runs_root = Path(self._temp.name) / "llm_evaluation"
+        _write_run(self.runs_root, "squat", model="gemini-3.1-pro-preview", video_fps=None)
+        _write_run(self.runs_root, "squat__pro__fps2", model="gemini-3.1-pro-preview", video_fps=2.0)
+        _write_run(self.runs_root, "squat__flash__fps2", model="gemini-3.8-flash", video_fps=2.0, metrics=False)
+        # Scratch directories that are not runs.
+        (self.runs_root / "review_app" / "media").mkdir(parents=True)
+        (self.runs_root / "test_leftover" / "metrics").mkdir(parents=True)
+        self.runs = reporting.discover_runs(self.runs_root)
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def test_only_directories_holding_predictions_count_as_runs(self) -> None:
+        self.assertEqual(sorted(self.runs["run"]), ["squat", "squat__flash__fps2", "squat__pro__fps2"])
+
+    def test_recorded_frame_rate_is_read_from_the_run_config(self) -> None:
+        row = self.runs[self.runs["run"] == "squat__pro__fps2"].iloc[0]
+        self.assertEqual(row["video_fps"], 2.0)
+        self.assertEqual(row["video_fps_source"], "recorded")
+
+    def test_runs_predating_the_flag_are_marked_inferred(self) -> None:
+        """The value was never written down, so it must not read as recorded."""
+        row = self.runs[self.runs["run"] == "squat"].iloc[0]
+        self.assertEqual(row["video_fps"], reporting.PRE_FLAG_VIDEO_FPS)
+        self.assertEqual(row["video_fps_source"], "inferred")
+
+    def test_missing_metrics_are_visible_in_the_table(self) -> None:
+        self.assertFalse(bool(self.runs[self.runs["run"] == "squat__flash__fps2"].iloc[0]["has_metrics"]))
+        self.assertTrue(bool(self.runs[self.runs["run"] == "squat"].iloc[0]["has_metrics"]))
+
+    def test_an_empty_root_yields_an_empty_table(self) -> None:
+        self.assertTrue(reporting.discover_runs(Path(self._temp.name) / "nope").empty)
+
+
+class SelectRunTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.runs_root = Path(self._temp.name) / "llm_evaluation"
+        _write_run(self.runs_root, "squat", model="gemini-3.1-pro-preview", video_fps=None)
+        _write_run(self.runs_root, "squat__pro__fps2", model="gemini-3.1-pro-preview", video_fps=2.0)
+        _write_run(self.runs_root, "squat__flash__fps2", model="gemini-3.8-flash", video_fps=2.0)
+        self.runs = reporting.discover_runs(self.runs_root)
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def test_model_and_fps_together_pick_one_run(self) -> None:
+        chosen = reporting.select_run(self.runs, model="gemini-3.1-pro-preview", video_fps=2.0)
+        self.assertEqual(chosen.name, "squat__pro__fps2")
+
+    def test_the_same_model_at_a_different_frame_rate_is_a_different_run(self) -> None:
+        chosen = reporting.select_run(self.runs, model="gemini-3.1-pro-preview", video_fps=1.0)
+        self.assertEqual(chosen.name, "squat")
+
+    def test_fps_alone_is_ambiguous_and_lists_the_candidates(self) -> None:
+        with self.assertRaises(LookupError) as context:
+            reporting.select_run(self.runs, video_fps=2.0)
+        message = str(context.exception)
+        self.assertIn("squat__pro__fps2", message)
+        self.assertIn("squat__flash__fps2", message)
+
+    def test_no_match_lists_what_is_available(self) -> None:
+        with self.assertRaises(LookupError) as context:
+            reporting.select_run(self.runs, model="gemini-3.8-flash", video_fps=1.0)
+        self.assertIn("gemini-3.1-pro-preview", str(context.exception))
+
+    def test_load_run_report_resolves_and_loads_in_one_step(self) -> None:
+        report = reporting.load_run_report(self.runs_root, model="gemini-3.8-flash", video_fps=2.0)
+        self.assertEqual(report.results_root.name, "squat__flash__fps2")
+
+    def test_run_header_flags_an_inferred_frame_rate(self) -> None:
+        report = reporting.load_run_report(self.runs_root, model="gemini-3.1-pro-preview", video_fps=1.0)
+        self.assertIn("inferred", str(reporting.run_header(report).loc["video_fps", "value"]))
+
+    def test_run_header_shows_a_recorded_frame_rate_plainly(self) -> None:
+        report = reporting.load_run_report(self.runs_root, model="gemini-3.8-flash", video_fps=2.0)
+        self.assertEqual(reporting.run_header(report).loc["video_fps", "value"], "2")
+
+
 class GroundTruthRowSelectionTests(unittest.TestCase):
     """The MLPSD label matrix has ten rows; only six belong to this pipeline."""
 

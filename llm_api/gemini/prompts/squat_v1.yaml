@@ -34,58 +34,58 @@ system_prompt: |
 
   Przykładowy format odpowiedzi JSON:
   ```json
-  {{
+  {
     "video_id": "example_video_001",
     "duration_s": 12.4,
     "predictions": [
-      {{
+      {
         "error_type": "Squat-depth",
         "present": true,
         "segments": [
-          {{
+          {
             "start_s": 3.1,
             "end_s": 4.6,
             "confidence": 0.91,
             "rationale": "Biodra nie schodzą wystarczająco nisko względem kolan."
-          }}
+          }
         ]
-      }},
-      {{
+      },
+      {
         "error_type": "Back-round",
         "present": false,
         "segments": []
-      }},
-      {{
+      },
+      {
         "error_type": "Taking-off-foot",
         "present": false,
         "segments": []
-      }},
-      {{
+      },
+      {
         "error_type": "Knee-collapse",
         "present": true,
         "segments": [
-          {{
+          {
             "start_s": 7.0,
             "end_s": 8.2,
             "confidence": 0.84,
             "rationale": "Kolana zapadają się do środka w fazie wstawania."
-          }}
+          }
         ]
-      }},
-      {{
+      },
+      {
         "error_type": "Dominant-hip",
         "present": false,
         "segments": []
-      }},
-      {{
+      },
+      {
         "error_type": "No-knee-outlet",
         "present": false,
         "segments": []
-      }}
+      }
     ],
     "global_confidence": 0.88,
     "notes": "Krótka, rzeczowa uwaga jeśli potrzebna; inaczej null."
-  }}
+  }
   ```
 
 user_prompt: |

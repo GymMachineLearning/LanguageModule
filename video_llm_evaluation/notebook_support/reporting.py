@@ -183,6 +183,109 @@ def load_metrics_report(results_root: Path | str) -> MetricsReport:
     )
 
 
+
+# --------------------------------------------------------------------------- #
+# Run discovery and selection
+# --------------------------------------------------------------------------- #
+
+#: Runs written before --video-fps existed always sampled at the API default.
+PRE_FLAG_VIDEO_FPS = 1.0
+
+
+def _run_predictions_count(run_dir: Path) -> int:
+    return sum(1 for _ in run_dir.rglob("predictions_json/*.json"))
+
+
+def discover_runs(runs_root: Path | str) -> pd.DataFrame:
+    """List the evaluation runs under a directory, one row per run.
+
+    A directory counts as a run when it holds at least one prediction, which
+    keeps scratch directories and the review app out of the table.
+
+    ``video_fps`` is read from ``config.yaml`` where the run recorded it. Runs
+    predating the flag report the API default with ``video_fps_source`` set to
+    ``inferred`` — the value was never written down, so it must not be presented
+    as though it had been.
+    """
+    root = Path(runs_root)
+    rows: list[dict[str, object]] = []
+    if not root.exists():
+        return pd.DataFrame(rows)
+
+    for run_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        prediction_count = _run_predictions_count(run_dir)
+        if not prediction_count:
+            continue
+
+        config = _read_config(run_dir)
+        recorded_fps = config.get("video_fps")
+        rows.append(
+            {
+                "run": run_dir.name,
+                "model": config.get("model_name", _NA),
+                "video_fps": float(recorded_fps) if recorded_fps is not None else PRE_FLAG_VIDEO_FPS,
+                "video_fps_source": "recorded" if recorded_fps is not None else "inferred",
+                "media_processing": config.get("media_processing", _NA),
+                "thinking_level": config.get("thinking_level", _NA),
+                "prompt_version": config.get("prompt_version", _NA),
+                "predictions": prediction_count,
+                "has_metrics": (run_dir / "metrics" / SUMMARY_FILE).exists(),
+                "results_root": run_dir,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _describe_runs(runs: pd.DataFrame) -> str:
+    if runs.empty:
+        return "  (none)"
+    return "\n".join(
+        f"  model={row['model']} video_fps={row['video_fps']:g} "
+        f"metrics={'yes' if row['has_metrics'] else 'no'}  -> {row['run']}"
+        for _, row in runs.iterrows()
+    )
+
+
+def select_run(
+    runs: pd.DataFrame,
+    *,
+    model: str | None = None,
+    video_fps: float | None = None,
+) -> Path:
+    """Resolve one run from the discovery table by model and frame rate.
+
+    Raises:
+        LookupError: when nothing matches, or when the filters leave more than
+            one run — both cases list what is actually available, because a
+            report silently bound to the wrong run is worse than no report.
+    """
+    matches = runs
+    if model is not None:
+        matches = matches[matches["model"] == model]
+    if video_fps is not None:
+        matches = matches[np.isclose(matches["video_fps"].astype(float), float(video_fps))]
+
+    criteria = ", ".join(
+        part for part in (f"model={model!r}" if model else "", f"video_fps={video_fps}" if video_fps else "") if part
+    ) or "no filter"
+
+    if matches.empty:
+        raise LookupError(f"No run matches {criteria}. Available runs:\n{_describe_runs(runs)}")
+    if len(matches) > 1:
+        raise LookupError(f"{len(matches)} runs match {criteria}; narrow it down:\n{_describe_runs(matches)}")
+    return Path(matches.iloc[0]["results_root"])
+
+
+def load_run_report(
+    runs_root: Path | str,
+    *,
+    model: str | None = None,
+    video_fps: float | None = None,
+) -> MetricsReport:
+    """Discover runs under ``runs_root`` and load the one matching model and fps."""
+    return load_metrics_report(select_run(discover_runs(runs_root), model=model, video_fps=video_fps))
+
+
 # --------------------------------------------------------------------------- #
 # Styling
 # --------------------------------------------------------------------------- #
@@ -404,9 +507,16 @@ def run_header(report: MetricsReport) -> pd.DataFrame:
     """Scope of the run: what was evaluated, by which model, against which dataset."""
     summary = report.summary
     config = report.config
+    recorded_fps = config.get('video_fps')
     rows = [
         ('results_root', str(report.results_root)),
         ('model_name', config.get('model_name', _NA)),
+        (
+            'video_fps',
+            f"{float(recorded_fps):g}" if recorded_fps is not None else f'{PRE_FLAG_VIDEO_FPS:g} (inferred, pre-flag run)',
+        ),
+        ('media_processing', config.get('media_processing', _NA)),
+        ('thinking_level', config.get('thinking_level', _NA)),
         ('dataset_path', Path(str(summary.get('dataset_path', ''))).name or _NA),
         ('found_predictions', summary.get('found_predictions', _NA)),
         ('evaluated', summary.get('evaluated', _NA)),

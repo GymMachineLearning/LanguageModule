@@ -19,7 +19,14 @@ from typing import Any, cast
 import numpy as np
 
 from llm_api.gemini import GeminiClient, GeminiPromptBuilder, GeminiVideoConfig
-from video_llm_evaluation.constants import ERROR_CLASSES, MLPSD_ERROR_ROW_INDICES
+from video_llm_evaluation.constants import (
+    AGENTIC_CAPABLE_MODEL_PREFIXES,
+    DEFAULT_MEDIA_PROCESSING,
+    DEFAULT_THINKING_LEVEL,
+    DEFAULT_VIDEO_FPS,
+    ERROR_CLASSES,
+    MLPSD_ERROR_ROW_INDICES,
+)
 from video_llm_evaluation.discovery import discover_videos
 from video_llm_evaluation.evaluation.persistence import (
     append_case_result,
@@ -106,6 +113,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional subfolder of videos-root to prioritize first when selecting videos.",
     )
     run_parser.add_argument("--skip-existing", action="store_true", default=False)
+    run_parser.add_argument(
+        "--video-fps",
+        "--video_fps",
+        dest="video_fps",
+        type=float,
+        default=DEFAULT_VIDEO_FPS,
+        help=f"Frames per second Gemini samples from each video (default {DEFAULT_VIDEO_FPS}; API default is 1.0).",
+    )
+    run_parser.add_argument(
+        "--media-processing",
+        dest="media_processing",
+        type=str,
+        default=DEFAULT_MEDIA_PROCESSING,
+        choices=["STATIC", "AGENTIC"],
+        help="STATIC pins fixed-rate sampling so --video-fps applies; AGENTIC lets the model navigate and ignores it.",
+    )
+    run_parser.add_argument(
+        "--media-resolution",
+        dest="media_resolution",
+        type=str,
+        default=None,
+        choices=["MEDIA_RESOLUTION_LOW", "MEDIA_RESOLUTION_MEDIUM", "MEDIA_RESOLUTION_HIGH", "MEDIA_RESOLUTION_ULTRA_HIGH"],
+        help="Token resolution per frame. Unset leaves the API default.",
+    )
+    run_parser.add_argument(
+        "--thinking-level",
+        dest="thinking_level",
+        type=str,
+        default=DEFAULT_THINKING_LEVEL,
+        choices=["MINIMAL", "LOW", "MEDIUM", "HIGH", "NONE"],
+        help=f"Reasoning effort (default {DEFAULT_THINKING_LEVEL}); NONE leaves the API default.",
+    )
 
     evaluate_parser = subparsers.add_parser("evaluate", help="Evaluate saved LLM labels against MLPSD ground truth")
     evaluate_parser.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
@@ -186,14 +225,38 @@ def _run(args: argparse.Namespace) -> None:
     )
 
     prompt_builder = GeminiPromptBuilder(template_path=args.prompt_yaml) if args.prompt_yaml else GeminiPromptBuilder()
+    thinking_level = None if args.thinking_level == "NONE" else args.thinking_level
     client = GeminiClient(
-        config=GeminiVideoConfig(model_name=args.model_name, api_key_env=args.api_key_env),
+        config=GeminiVideoConfig(
+            model_name=args.model_name,
+            api_key_env=args.api_key_env,
+            video_fps=args.video_fps,
+            media_processing=args.media_processing,
+            media_resolution=args.media_resolution,
+            thinking_level=thinking_level,
+        ),
         prompt_builder=prompt_builder,
     )
     if client.client is None:
         raise RuntimeError(
             f"Gemini API key not found in environment variable {args.api_key_env}. "
             f"Set it before running, for example: export {args.api_key_env}=<your_key>"
+        )
+
+    client.verify_model_available()
+    logger.info(
+        "Model %s verified. media_processing=%s video_fps=%s media_resolution=%s thinking_level=%s",
+        args.model_name,
+        args.media_processing,
+        args.video_fps,
+        args.media_resolution or "api-default",
+        thinking_level or "api-default",
+    )
+    if args.media_processing == "STATIC" and args.model_name.startswith(AGENTIC_CAPABLE_MODEL_PREFIXES):
+        logger.info(
+            "Model %s supports AGENTIC processing; pinning STATIC so --video-fps=%s is honoured.",
+            args.model_name,
+            args.video_fps,
         )
 
     discovered = discover_videos(videos_root, results_root)
@@ -208,6 +271,11 @@ def _run(args: argparse.Namespace) -> None:
             "max_request": args.max_request,
             "seed": args.seed,
             "model_name": args.model_name,
+            "video_fps": args.video_fps,
+            "media_processing": args.media_processing,
+            "media_resolution": args.media_resolution,
+            "thinking_level": thinking_level,
+            "prompt_version": client.prompt_builder.prompt_version,
             "prompt_yaml": str(args.prompt_yaml) if args.prompt_yaml else None,
             "preferred_folder": str(args.preferred_folder) if args.preferred_folder else None,
             "num_discovered": len(discovered),
@@ -253,11 +321,22 @@ def _run(args: argparse.Namespace) -> None:
         try:
             response = client.generate(video_path=str(item.video_path), video_id=item.video_id, duration_s=item.duration_s)
             raw_response = _normalize_raw_response(response)
+            # Persist the response before parsing it: a malformed response is
+            # exactly the case worth inspecting, and parsing it away first meant
+            # the evidence was discarded with the exception.
+            raw_response_path = save_raw_response(run_paths, item.video_id, raw_response)
+
             prediction = client.parse_response(raw_response, video_id=item.video_id, duration_s=item.duration_s)
             labels = video_prediction_to_frame_labels(prediction, fps=item.fps, num_frames=item.num_frames)
 
-            prediction_path = save_prediction_json(run_paths, prediction, model_name=args.model_name, prompt_version=client.prompt_builder.prompt_version)
-            raw_response_path = save_raw_response(run_paths, item.video_id, raw_response)
+            prediction_path = save_prediction_json(
+                run_paths,
+                prediction,
+                model_name=args.model_name,
+                prompt_version=client.prompt_builder.prompt_version,
+                video_fps=args.video_fps,
+                media_processing=args.media_processing,
+            )
             labels_npy_path = save_labels_npy(run_paths, item.video_id, labels)
             labels_csv_path = save_labels_csv(run_paths, item.video_id, labels, fps=item.fps)
 
