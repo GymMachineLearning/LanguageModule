@@ -19,6 +19,7 @@ from typing import Any, cast
 import numpy as np
 
 from llm_api.gemini import GeminiClient, GeminiPromptBuilder, GeminiVideoConfig
+from llm_api.gemini.response_parser import GeminiResponseParser
 from video_llm_evaluation.constants import (
     AGENTIC_CAPABLE_MODEL_PREFIXES,
     DEFAULT_MEDIA_PROCESSING,
@@ -53,6 +54,7 @@ from video_llm_evaluation.evaluation.persistence import (
 )
 from video_llm_evaluation.evaluation.segments_to_frames import video_prediction_to_frame_labels
 from video_llm_evaluation.evaluation.metrics import frame_metrics, segment_metrics, video_level_metrics
+from video_llm_evaluation.schemas import CERTAINTY_LEVELS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VIDEOS_ROOT = (REPO_ROOT / "../../videos/Nagrania/Squat/preprocessed").resolve()
@@ -154,6 +156,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["MEDIA_RESOLUTION_LOW", "MEDIA_RESOLUTION_MEDIUM", "MEDIA_RESOLUTION_HIGH", "MEDIA_RESOLUTION_ULTRA_HIGH"],
         help="Token resolution per frame. Unset leaves the API default.",
+    )
+    run_parser.add_argument(
+        "--min-certainty",
+        dest="min_certainty",
+        type=str,
+        default=None,
+        choices=list(CERTAINTY_LEVELS),
+        help=(
+            "Lowest certainty a segment must declare to count as a positive prediction. "
+            "Unset keeps every segment the model returns. Prompts before v2 declare no "
+            "certainty at all, so any threshold discards their segments entirely."
+        ),
     )
     run_parser.add_argument(
         "--thinking-level",
@@ -261,6 +275,7 @@ def _run(args: argparse.Namespace) -> None:
             thinking_level=thinking_level,
         ),
         prompt_builder=prompt_builder,
+        response_parser=GeminiResponseParser(min_certainty=args.min_certainty),
     )
     if client.client is None:
         raise RuntimeError(
@@ -333,6 +348,9 @@ def _run(args: argparse.Namespace) -> None:
             "thinking_level": thinking_level,
             "prompt_version": client.prompt_builder.prompt_version,
             "prompt_yaml": str(args.prompt_yaml) if args.prompt_yaml else None,
+            # The decision threshold is a property of the run, not of the model: the
+            # same responses under two thresholds are two different label sets.
+            "min_certainty": args.min_certainty,
             "preferred_folder": str(args.preferred_folder) if args.preferred_folder else None,
             "num_discovered": len(discovered),
             "num_selected": len(selected),
@@ -341,7 +359,12 @@ def _run(args: argparse.Namespace) -> None:
     )
 
     totals = {"processed": 0, "succeeded": 0, "failed": 0, "skipped": 0}
-    for item in selected:
+    queue_size = len(selected)
+    for position, item in enumerate(selected, start=1):
+        # Position in this invocation's queue, not in the library: a run filtered to
+        # one split processes a fraction of what is on disk, and a log that counts
+        # the library cannot be read as progress.
+        progress = f"{position}/{queue_size}"
         run_paths = item.output_dir
         started_at = _utc_now()
         started_perf = time.perf_counter()
@@ -349,7 +372,12 @@ def _run(args: argparse.Namespace) -> None:
             elapsed_s = time.perf_counter() - started_perf
             totals["skipped"] += 1
             totals["processed"] += 1
-            logger.info("SKIP video_id=%s elapsed=%.3fs reason=existing prediction", item.video_id, elapsed_s)
+            logger.info(
+                "SKIP [%s] video_id=%s elapsed=%.3fs reason=existing prediction",
+                progress,
+                item.video_id,
+                elapsed_s,
+            )
             append_case_result(
                 results_root,
                 {
@@ -373,7 +401,7 @@ def _run(args: argparse.Namespace) -> None:
             )
             continue
 
-        logger.info("START video_id=%s video_path=%s", item.video_id, item.video_path)
+        logger.info("START [%s] video_id=%s video_path=%s", progress, item.video_id, item.video_path)
         try:
             response = client.generate(video_path=str(item.video_path), video_id=item.video_id, duration_s=item.duration_s)
             raw_response = _normalize_raw_response(response)
@@ -400,7 +428,13 @@ def _run(args: argparse.Namespace) -> None:
             elapsed_s = time.perf_counter() - started_perf
             totals["processed"] += 1
             totals["succeeded"] += 1
-            logger.info("OK video_id=%s elapsed=%.3fs prediction_path=%s", item.video_id, elapsed_s, prediction_path)
+            logger.info(
+                "OK [%s] video_id=%s elapsed=%.3fs prediction_path=%s",
+                progress,
+                item.video_id,
+                elapsed_s,
+                prediction_path,
+            )
             append_case_result(
                 results_root,
                 {
@@ -427,7 +461,13 @@ def _run(args: argparse.Namespace) -> None:
             totals["processed"] += 1
             totals["failed"] += 1
             error_message = f"{type(exc).__name__}: {exc}"
-            logger.exception("ERROR video_id=%s elapsed=%.3fs %s", item.video_id, elapsed_s, error_message)
+            logger.exception(
+                "ERROR [%s] video_id=%s elapsed=%.3fs %s",
+                progress,
+                item.video_id,
+                elapsed_s,
+                error_message,
+            )
             append_failure(results_root, video_id=item.video_id, video_path=str(item.video_path), status="error", error_message=error_message)
             append_case_result(
                 results_root,

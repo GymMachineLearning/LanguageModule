@@ -13,14 +13,14 @@ z datasetu MLPSD.
 
 Rozpoznawanych jest **6 klas błędów** (`video_llm_evaluation/constants.py`):
 
-| klasa | opis |
-|---|---|
-| `Squat-depth` | zbyt płytki przysiad |
-| `Back-round` | zaokrąglenie pleców |
-| `Taking-off-foot` | odrywanie stóp od podłoża |
-| `Knee-collapse` | zapadanie kolan do środka |
-| `Dominant-hip` | ruch zdominowany przez biodra |
-| `No-knee-outlet` | kolana nie wychodzą do przodu |
+| klasa               | opis                           |
+| ------------------- | ------------------------------ |
+| `Squat-depth`     | zbyt płytki przysiad          |
+| `Back-round`      | zaokrąglenie pleców          |
+| `Taking-off-foot` | odrywanie stóp od podłoża   |
+| `Knee-collapse`   | zapadanie kolan do środka     |
+| `Dominant-hip`    | ruch zdominowany przez biodra  |
+| `No-knee-outlet`  | kolana nie wychodzą do przodu |
 
 ### Trzy kroki, trzy narzędzia
 
@@ -42,13 +42,13 @@ może pokazać innych liczb niż raport CLI.
 
 ### Moduły
 
-| katalog | odpowiedzialność |
-|---|---|
-| `llm_api/gemini/` | rozmowa z Gemini: config, budowa promptu, klient, parser odpowiedzi |
-| `video_llm_evaluation/` | CLI, wykrywanie nagrań, schematy, konwersja segmentów na klatki |
-| `video_llm_evaluation/evaluation/` | metryki i zapis artefaktów |
-| `video_llm_evaluation/notebook_support/` | warstwa prezentacji dla notebooka |
-| `tests/` | testy; **żaden nie wywołuje API** |
+| katalog                                    | odpowiedzialność                                                  |
+| ------------------------------------------ | ------------------------------------------------------------------- |
+| `llm_api/gemini/`                        | rozmowa z Gemini: config, budowa promptu, klient, parser odpowiedzi |
+| `video_llm_evaluation/`                  | CLI, wykrywanie nagrań, schematy, konwersja segmentów na klatki   |
+| `video_llm_evaluation/evaluation/`       | metryki i zapis artefaktów                                         |
+| `video_llm_evaluation/notebook_support/` | warstwa prezentacji dla notebooka                                   |
+| `tests/`                                 | testy;**żaden nie wywołuje API**                            |
 
 ---
 
@@ -84,32 +84,34 @@ python -m video_llm_evaluation.cli run \
 
 ### Najważniejsze flagi
 
-| flaga | domyślnie | do czego |
-|---|---|---|
-| `--split` | **`test`** | z którego splitu MLPSD wysyłać nagrania |
-| `--results-root` | `results/llm_evaluation/squat` | gdzie lądują wyniki |
-| `--model-name` | `gemini-3.1-pro-preview` | model |
-| `--video-fps` | `2.0` | ile klatek na sekundę widzi model |
-| `--max-request` | wszystkie | limit liczby nagrań |
-| `--media-processing` | `STATIC` | `STATIC` albo `AGENTIC` |
-| `--thinking-level` | `MEDIUM` | `MINIMAL` / `LOW` / `MEDIUM` / `HIGH` / `NONE` |
-| `--media-resolution` | domyślne API | tokeny na klatkę |
-| `--skip-existing` | wyłączone | pomija nagrania z gotową predykcją |
-| `--preferred-folder` | brak | podfolder brany w pierwszej kolejności |
-| `--seed` | `42` | losowanie przy `--max-request` |
-| `--dataset-path` | ścieżka do MLPSD `.pkl` | źródło informacji o splicie |
+| flaga                  | domyślnie                       | do czego                                                 |
+| ---------------------- | -------------------------------- | -------------------------------------------------------- |
+| `--split`            | **`test`**               | z którego splitu MLPSD wysyłać nagrania               |
+| `--results-root`     | `results/llm_evaluation/squat` | gdzie lądują wyniki                                    |
+| `--model-name`       | `gemini-3.1-pro-preview`       | model                                                    |
+| `--video-fps`        | `2.0`                          | ile klatek na sekundę widzi model                       |
+| `--prompt-yaml`      | `squat_v1.yaml`                | który prompt wysłać                                   |
+| `--min-certainty`    | brak progu                       | od jakiej deklarowanej pewności wskazanie się liczy    |
+| `--max-request`      | wszystkie                        | limit liczby nagrań                                     |
+| `--media-processing` | `STATIC`                       | `STATIC` albo `AGENTIC`                              |
+| `--thinking-level`   | `MEDIUM`                       | `MINIMAL` / `LOW` / `MEDIUM` / `HIGH` / `NONE` |
+| `--media-resolution` | domyślne API                    | tokeny na klatkę                                        |
+| `--skip-existing`    | wyłączone                      | pomija nagrania z gotową predykcją                     |
+| `--preferred-folder` | brak                             | podfolder brany w pierwszej kolejności                  |
+| `--seed`             | `42`                           | losowanie przy`--max-request`                          |
+| `--dataset-path`     | ścieżka do MLPSD`.pkl`       | źródło informacji o splicie                           |
 
 ### `--split` — domyślnie tylko nagrania testowe
 
 Split pochodzi z kolumny `dataset_split` w `.pkl` MLPSD. Rozkład dla biblioteki
 451 nagrań na dysku:
 
-| `--split` | nagrań wysłanych |
-|---|---|
-| `test` (domyślnie) | **42** |
-| `val` | 41 |
-| `train` | 179 |
-| `all` | 451 |
+| `--split`           | nagrań wysłanych |
+| --------------------- | ------------------ |
+| `test` (domyślnie) | **42**       |
+| `val`               | 41                 |
+| `train`             | 179                |
+| `all`               | 451                |
 
 189 nagrań nie ma odpowiednika w MLPSD — nie mają przypisanego splitu, więc
 wypadają przy każdej wartości poza `all`. Log przy każdym runie podaje pełny
@@ -127,15 +129,40 @@ pamiętaj o tym, jeśli kiedyś chcesz przepuścić wszystko: `--split all`.
 Jeden katalog wyników może zawierać nagrania z różnych splitów; filtrowanie
 odbywa się dopiero przy `evaluate` i w notebooku.
 
+### `--prompt-yaml` i `--min-certainty` — prompt jako hiperparametr
+
+Prompt jest zmienną eksperymentu, nie stałą, i wersje różnią się tym, czego
+wymagają od modelu:
+
+| plik              | co robi                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `squat_v1.yaml` | baseline: jednozdaniowe definicje klas,`confidence` jako liczba 0–1                                                                                              |
+| `squat_v2.yaml` | kryterium zgłoszenia i kryterium wykluczenia osobno dla każdej klasy,`present: false` jako domyślna odpowiedź, `certainty` jako `low`/`medium`/`high` |
+
+`--min-certainty` to **próg decyzyjny**, czyli poziom `certainty`, od którego
+wskazanie modelu liczymy jako predykcję pozytywną. Segment poniżej progu jest
+odrzucany; jeśli próg opróżni całą klasę, klasa staje się nieobecna, nawet gdy
+model zadeklarował `present: true`.
+
+Próg działa wyłącznie na prompt v2 i nowsze. Predykcje v1 nie mają pola
+`certainty` — mają liczbowe `confidence`, którego **nie da się progować**, bo
+wszystkie zwrócone wartości mieszczą się w przedziale 0.65–0.74, a wskazania
+trafione i fałszywe są w nim nieodróżnialne. Dlatego dowolny `--min-certainty`
+odrzuca segmenty v1 w całości, zamiast po cichu je przepuszczać. To zachowanie
+celowe: jeśli zobaczysz pusty wynik na runie v1, sprawdź najpierw tę flagę.
+
 ### Nazwa katalogu wyników ma znaczenie
 
-Konwencja: `squat__<model>__fps<N>`. Runy **muszą być rodzeństwem**, nie mogą
-być zagnieżdżone — `evaluate` wywodzi ścieżkę do MLPSD ze struktury katalogów
+Konwencja: `squat__<model>__fps<N>__<prompt_version>`. Wersja promptu należy do
+nazwy z tego samego powodu co model i fps: run v2 zapisany pod nazwą runu v1
+wymiesza się z baseline'em i zniszczy porównanie. Runy **muszą być rodzeństwem**,
+nie mogą być zagnieżdżone — `evaluate` wywodzi ścieżkę do MLPSD ze struktury katalogów
 względem `--results-root`, więc dodatkowy poziom zagnieżdżenia zepsuje mapowanie.
 
-Nigdy nie mieszaj w jednym katalogu runów o różnym fps albo modelu. `evaluate`
-zagreguje je wszystkie razem bez ostrzeżenia. Warunki są zapisywane w
-`config.yaml` i w każdym `predictions_json`, ale rozdzielić je musisz sam.
+Nigdy nie mieszaj w jednym katalogu runów o różnym fps, modelu albo prompcie.
+`evaluate` zagreguje je wszystkie razem bez ostrzeżenia. Warunki są zapisywane w
+`config.yaml` (w tym `prompt_version` i `min_certainty`) i w każdym
+`predictions_json`, ale rozdzielić je musisz sam.
 
 ### `--video-fps` — dlaczego 2.0, a nie domyślne 1.0
 
@@ -146,11 +173,11 @@ sekundach** — nie szacował czasu, tylko przepisywał sekundowe znaczniki.
 
 Pomiar na tym samym zestawie 5 nagrań:
 
-| konfiguracja | granic na pełnych sekundach |
-|---|---|
-| gemini-3.1-pro-preview, fps=1 | 74.6% |
-| gemini-3.1-pro-preview, fps=2 | 34.2% |
-| gemini-3.8-flash, fps=2 | 15.2% |
+| konfiguracja                  | granic na pełnych sekundach |
+| ----------------------------- | ---------------------------- |
+| gemini-3.1-pro-preview, fps=1 | 74.6%                        |
+| gemini-3.1-pro-preview, fps=2 | 34.2%                        |
+| gemini-3.8-flash, fps=2       | 15.2%                        |
 
 Koszt: 65 tokenów na klatkę plus ~32 tokeny na sekundę ścieżki audio, czyli
 przejście z 1 na 2 fps mniej więcej podwaja tokeny wejścia. Przy tych nagraniach
@@ -197,12 +224,12 @@ python -m video_llm_evaluation.cli evaluate \
 Bez API, bez kosztu. Bierze `labels_npy/*.npy`, dopasowuje do nagrań w pliku
 `.pkl` MLPSD i liczy metryki na trzech poziomach.
 
-| flaga | domyślnie | do czego |
-|---|---|---|
-| `--results-root` | `results/llm_evaluation/squat` | który run oceniać |
-| `--dataset-path` | ścieżka do MLPSD `.pkl` | ground truth i splity |
-| `--split` | **`test`** | który split oceniać |
-| `--max-frame-difference` | `1` | tolerancja rozjazdu liczby klatek |
+| flaga                      | domyślnie                       | do czego                          |
+| -------------------------- | -------------------------------- | --------------------------------- |
+| `--results-root`         | `results/llm_evaluation/squat` | który run oceniać               |
+| `--dataset-path`         | ścieżka do MLPSD`.pkl`       | ground truth i splity             |
+| `--split`                | **`test`**               | który split oceniać             |
+| `--max-frame-difference` | `1`                            | tolerancja rozjazdu liczby klatek |
 
 ### `--split` przy ewaluacji, i dlaczego metryki się nie nadpisują
 
@@ -244,14 +271,14 @@ tylko po cichu podmienia dwie ostatnie klasy. Każdy nowy kod czytający MLPSD
 
 ### Co powstaje w `metrics/`
 
-| plik | zawartość |
-|---|---|
-| `summary.json` | agregaty całego runu |
-| `frame_metrics.csv` | per klasa, agregat |
-| `frame_metrics_by_video.csv` | per klasa i nagranie |
-| `video_level_metrics.csv` / `_by_video.csv` | to samo, poziom nagrania |
-| `segment_metrics.csv` / `_by_video.csv` | to samo, poziom segmentu × tolerancja |
-| `evaluation_cases.csv` | które nagrania ocenione, które odrzucone i dlaczego |
+| plik                                            | zawartość                                           |
+| ----------------------------------------------- | ----------------------------------------------------- |
+| `summary.json`                                | agregaty całego runu                                 |
+| `frame_metrics.csv`                           | per klasa, agregat                                    |
+| `frame_metrics_by_video.csv`                  | per klasa i nagranie                                  |
+| `video_level_metrics.csv` / `_by_video.csv` | to samo, poziom nagrania                              |
+| `segment_metrics.csv` / `_by_video.csv`     | to samo, poziom segmentu × tolerancja                |
+| `evaluation_cases.csv`                        | które nagrania ocenione, które odrzucone i dlaczego |
 
 **Zawsze zerknij na `evaluation_cases.csv`.** Nagrania bez dopasowania w MLPSD są
 pomijane po cichu, a metryki liczą się na tym, co zostało.
@@ -285,6 +312,7 @@ których metryki już istnieją. `content` liczony jest z zawartości, nie z con
 — to jedyny sposób, by zobaczyć skład katalogów zapełnionych przed dodaniem flagi.
 
 Kolumna `video_fps_source`:
+
 - `recorded` — wartość zapisana przez pipeline,
 - `inferred` — run powstał przed flagą `--video-fps`, więc pokazane 1.0 to
   domyślna wartość API, a nie liczba faktycznie zanotowana.

@@ -293,8 +293,14 @@ def select_run(
     *,
     model: str | None = None,
     video_fps: float | None = None,
+    prompt_version: str | None = None,
 ) -> Path:
-    """Resolve one run from the discovery table by model and frame rate.
+    """Resolve one run from the discovery table by model, frame rate and prompt.
+
+    ``prompt_version`` is as much a condition of a run as the model and the frame
+    rate: two prompts asked the same model different questions, so their results
+    are not one result. Without it, a model evaluated under two prompts at the
+    same frame rate leaves the selection ambiguous.
 
     Raises:
         LookupError: when nothing matches, or when the filters leave more than
@@ -306,9 +312,17 @@ def select_run(
         matches = matches[matches["model"] == model]
     if video_fps is not None:
         matches = matches[np.isclose(matches["video_fps"].astype(float), float(video_fps))]
+    if prompt_version is not None:
+        matches = matches[matches["prompt_version"].astype(str) == str(prompt_version)]
 
     criteria = ", ".join(
-        part for part in (f"model={model!r}" if model else "", f"video_fps={video_fps}" if video_fps else "") if part
+        part
+        for part in (
+            f"model={model!r}" if model else "",
+            f"video_fps={video_fps}" if video_fps else "",
+            f"prompt_version={prompt_version!r}" if prompt_version else "",
+        )
+        if part
     ) or "no filter"
 
     if matches.empty:
@@ -323,10 +337,16 @@ def load_run_report(
     *,
     model: str | None = None,
     video_fps: float | None = None,
+    prompt_version: str | None = None,
     split: str | None = DEFAULT_SPLIT,
 ) -> MetricsReport:
-    """Discover runs under ``runs_root`` and load the one matching model and fps."""
-    chosen = select_run(discover_runs(runs_root), model=model, video_fps=video_fps)
+    """Discover runs under ``runs_root`` and load the one matching the conditions."""
+    chosen = select_run(
+        discover_runs(runs_root),
+        model=model,
+        video_fps=video_fps,
+        prompt_version=prompt_version,
+    )
     return load_metrics_report(chosen, split=split)
 
 

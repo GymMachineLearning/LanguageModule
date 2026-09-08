@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -18,9 +18,20 @@ class ManifestRow(BaseModel):
     ground_truth_path: Optional[str] = None
 
 
+#: Ordered from least to most certain, so a threshold is a slice of this tuple.
+CERTAINTY_LEVELS = ("low", "medium", "high")
+
+CertaintyLevel = Literal["low", "medium", "high"]
+
+
 class ErrorSegment(BaseModel):
     start_s: float = Field(ge=0)
     end_s: float = Field(ge=0)
+    #: Prompt v2 onwards. The float ``confidence`` it replaces turned out degenerate:
+    #: every value a run produced sat in 0.65-0.74, with matched and unmatched
+    #: predictions indistinguishable, so no threshold on it could separate them.
+    certainty: Optional[CertaintyLevel] = None
+    #: Prompt v1. Kept so v1 predictions stay readable and the baseline survives.
     confidence: Optional[float] = Field(default=None, ge=0, le=1)
     rationale: Optional[str] = None
 
