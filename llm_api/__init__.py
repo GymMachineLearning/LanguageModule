@@ -1,0 +1,1 @@
+"""Shared LLM API adapters."""
