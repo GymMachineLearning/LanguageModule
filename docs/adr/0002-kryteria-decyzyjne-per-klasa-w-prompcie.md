@@ -51,7 +51,28 @@ to, **jak** te kryteria są napisane, a nie tylko to, że istnieją:
   pomyłkowy: odpowiednio wąską pozycję startową bez zmiany odległości kolan oraz
   pochylenie tułowia przy neutralnym kręgosłupie.
 
-Poza zakresem v2 zostaje świadomie **oprawa promptu**: wiodące
+**Wynik v2 na splicie `test` (42 nagrania), video-level micro:** precision 0.25 → 0.50,
+recall 0.607 → 0.321, F0.5 0.283 → 0.450. Najmocniejszy dowód dla koniunkcji dwóch
+obserwacji: `Dominant-hip` przeszedł z precision 0.18 na 0.667 **przy nietkniętym
+recallu 1.00**, a segment-level F1@1s wyniósł 0.867. `Taking-off-foot` nie drgnął
+(P=1.00, R=0.40), zgodnie z zamiarem.
+
+Dwa kryteria wykluczenia przestrzeliły. `No-knee-outlet` spadł z recall 1.00 na **0.00**
+— zakaz zgłaszania klasy jako konsekwencji `Squat-depth` wyciął razem z fałszywymi
+wskazaniami także trzy prawdziwe, bo w GT te klasy współwystępują w 26 z 29 nagrań.
+`Squat-depth` spadł z recall 0.50 na 0.125: sformułowanie „kryterium ma być tolerancyjne"
+w połączeniu z domyślnym `present: false` dało klasę, która prawie nic nie zgłasza.
+Obie sytuacje wymagają poluzowania, nie zacieśnienia.
+
+**v3 zmienia wyłącznie `Knee-collapse`** — jedyną klasę, która po v2 pogorszyła się na
+obu osiach (precision 0.40 → 0.286, recall 0.80 → 0.40) i która trzyma 5 z 9 pozostałych
+fałszywych wskazań video-level oraz 14 z segment-level. Dostaje ten sam instrument, który
+zadziałał na `Dominant-hip`: koniunkcję dwóch obserwacji — malejąca odległość między
+kolanami **oraz** przejście kolana przyśrodkowo względem linii palców własnej stopy.
+`Dominant-hip` zostaje nietknięty celowo: przy 2 pozostałych FP i recallu 1.00 zacieśnianie
+go stawia na szali jedyną działającą klasę dla zysku dwóch nagrań.
+
+Poza zakresem v2 i v3 zostaje świadomie **oprawa promptu**: wiodące
 `expected_error_classes` w `user_prompt` naprawiamy w v2 tylko przez zmianę nazwy pola
 na neutralne (bo pozostawienie go jest wprost sprzeczne z regułą abstynencji), ale
 przykład odpowiedzi, który kotwiczy model na dwóch obecnych klasach z sześciu, zostaje
